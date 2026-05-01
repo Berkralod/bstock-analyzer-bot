@@ -276,23 +276,30 @@ async def cmd_debug(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 except Exception as e:
                     lines.append(f"AUTH hata: {str(e)[:100]}")
 
-            # Step 4: Try listing API with auth token
+            # Step 4: Listing API with auth token — show full key structure
             if uid:
                 listing_headers = {**HEADERS, "Accept": "application/json"}
                 if auth_token:
                     listing_headers["Authorization"] = f"Bearer {auth_token}"
-                for listing_url in [
-                    f"https://listing.bstock.com/v1/listings/{uid}",
-                    f"https://listing.bstock.com/v1/listings/{uid}/details",
-                    f"https://auction.bstock.com/v1/auctions/{uid}",
-                ]:
-                    try:
-                        r3 = await client.get(listing_url, headers=listing_headers, timeout=8.0)
-                        lines.append(f"[{r3.status_code}] {listing_url.split('com')[1]} | {r3.text[:150]}")
-                        if r3.status_code == 200:
-                            break
-                    except Exception as e:
-                        lines.append(f"ERR: {str(e)[:80]}")
+                try:
+                    r3 = await client.get(
+                        f"https://listing.bstock.com/v1/listings/{uid}",
+                        headers=listing_headers, timeout=10.0
+                    )
+                    lines.append(f"LISTING: HTTP {r3.status_code}, {len(r3.text)} karakter")
+                    if r3.status_code == 200:
+                        listing_data = r3.json()
+                        lines.append(f"Top keys: {list(listing_data.keys())}")
+                        for k, v in listing_data.items():
+                            vt = type(v).__name__
+                            vl = f"[{len(v)}]" if isinstance(v, (list, dict)) else f"= {str(v)[:60]}"
+                            lines.append(f"  {k} ({vt}) {vl}")
+                            if isinstance(v, list) and v:
+                                lines.append(f"    item[0]: {str(v[0])[:120]}")
+                    else:
+                        lines.append(r3.text[:200])
+                except Exception as e:
+                    lines.append(f"LISTING ERR: {str(e)[:100]}")
 
     except Exception as e:
         lines.append(f"GENEL HATA: {e}")
