@@ -324,6 +324,31 @@ async def cmd_debug(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                                 except Exception as e:
                                     lines.append(f"ERR: {str(e)[:50]}")
 
+                        # Ingestion API via numeric lot ID from title
+                        import re as _re
+                        if auctions:
+                            auction_title = (auctions[0].get("attributes") or {}).get("title", "") or auctions[0].get("title", "")
+                            lines.append(f"auction title: {auction_title[:200]}")
+                            nm = _re.search(r'[-\(](\d{5,8})\)?', auction_title)
+                            if nm:
+                                numeric_id = nm.group(1)
+                                lines.append(f"numeric_lot_id: {numeric_id}")
+                                for ing_url in [
+                                    f"https://ingestion.bstock.com/v1/lots/{numeric_id}/items",
+                                    f"https://ingestion.bstock.com/v1/lots/{numeric_id}",
+                                    f"https://ingestion.bstock.com/v1/manifests/{numeric_id}",
+                                    f"https://ingestion.bstock.com/v1/manifests/{numeric_id}/items",
+                                ]:
+                                    try:
+                                        ri = await client.get(ing_url, headers=listing_headers, timeout=8.0)
+                                        lines.append(f"INGESTION [{ri.status_code}] {ing_url.split('.com')[1]}: {ri.text[:200]}")
+                                        if ri.status_code == 200:
+                                            break
+                                    except Exception as e:
+                                        lines.append(f"INGESTION ERR: {str(e)[:60]}")
+                            else:
+                                lines.append("numeric_lot_id: NOT FOUND in title")
+
                     else:
                         lines.append(r3.text[:200])
                 except Exception as e:

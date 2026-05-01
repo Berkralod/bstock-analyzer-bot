@@ -87,62 +87,70 @@ class BStockScraper:
 
     async def _try_json_api(self, uid: str, client: httpx.AsyncClient) -> dict | None:
         """
-        B-Stock API flow (discovered via debug):
-        1. GET listing.bstock.com/v1/listings/{uid} → listing metadata + lotId
-        2. GET offering.bstock.com/v1/offerings?listingId={uid} → offerings with products
+        B-Stock API flow (confirmed via debug):
+        1. POST auth.bstock.com/api/login → Bearer token
+        2. GET listing.bstock.com/v1/listings/{uid} → shipping (flatRateCost), lotId
+        3. GET auction.bstock.com/v1/auctions?listingId={uid} → title, bid, MSRP, condition
+        4. GET ingestion.bstock.com/v1/lots/{numericLotId}/items → individual products
         """
         headers = {**self._auth_headers(), "Accept": "application/json"}
+        result: dict = {}
 
-        # Step 1: Get listing metadata
-        listing_data = None
+        # Step 1: Listing metadata (shipping cost)
         try:
             r = await client.get(
                 f"{LISTING_BASE}/v1/listings/{uid}",
-                headers=headers,
-                timeout=12.0,
+                headers=headers, timeout=12.0,
             )
             if r.status_code == 200:
-                listing_data = r.json()
+                ld = r.json()
+                result["_listing"] = ld
+                shipping = ld.get("shipping") or {}
+                flat = shipping.get("flatRateCost")
+                if flat:
+                    # flatRateCost is in cents
+                    result["shipping_cost"] = flat / 100
         except Exception:
             pass
 
-        # Step 2: Get offerings (contains products)
+        # Step 2: Auction data (title, current bid, MSRP in title)
+        auction_data = None
         try:
             r = await client.get(
-                f"https://offering.bstock.com/v1/offerings?listingId={uid}",
-                headers=headers,
-                timeout=12.0,
+                f"{AUCTION_BASE}/v1/auctions?listingId={uid}",
+                headers=headers, timeout=12.0,
             )
             if r.status_code == 200:
-                data = r.json()
-                offerings = data.get("offerings", [])
-                if offerings and listing_data:
-                    # Merge listing metadata with offering product data
-                    result = dict(listing_data)
-                    result["offerings"] = offerings
-                    # Flatten first offering's items to top-level products
-                    for offering in offerings:
-                        items = (
-                            offering.get("items")
-                            or offering.get("products")
-                            or offering.get("lots")
-                            or offering.get("manifest")
-                            or []
-                        )
-                        if items:
-                            result["products"] = items
-                            break
-                    return result
-                elif offerings:
-                    return {"offerings": offerings}
+                auctions = r.json().get("auctions", [])
+                if auctions:
+                    auction_data = auctions[0]
+                    result["_auction"] = auction_data
         except Exception:
             pass
 
-        # Return listing metadata alone (will trigger Haiku fallback)
-        if listing_data:
-            return listing_data
+        # Step 3: Try ingestion with numeric lot ID from title
+        if auction_data:
+            title = (auction_data.get("attributes") or {}).get("title", "")
+            # Extract numeric lot ID like "DAL-6693732" or "(6693732)"
+            m = re.search(r'[-\(](\d{5,8})\)?', title)
+            if m:
+                numeric_lot_id = m.group(1)
+                result["_numeric_lot_id"] = numeric_lot_id
+                for ingestion_url in [
+                    f"https://ingestion.bstock.com/v1/lots/{numeric_lot_id}/items",
+                    f"https://ingestion.bstock.com/v1/lots/{numeric_lot_id}",
+                    f"https://ingestion.bstock.com/v1/manifests/{numeric_lot_id}",
+                    f"https://ingestion.bstock.com/v1/manifests/{numeric_lot_id}/items",
+                ]:
+                    try:
+                        ri = await client.get(ingestion_url, headers=headers, timeout=10.0)
+                        if ri.status_code == 200:
+                            result["_ingestion"] = ri.json()
+                            break
+                    except Exception:
+                        continue
 
-        return None
+        return result if result else None
 
     async def _fetch_url(self, url: str) -> tuple[str, dict | None]:
         """Returns (html, json_data). json_data takes priority if not None."""
@@ -290,10 +298,93 @@ class BStockScraper:
         return lot
 
     def _parse_json(self, data: dict, lot: Lot) -> list:
-        """Parse B-Stock listing/offering API JSON response."""
+        """Parse B-Stock API response (listing + auction + ingestion dicts)."""
         products = []
 
-        # Extract listing-level metadata
+        # --- New microservice response format (_listing, _auction, _ingestion) ---
+        if "_listing" in data or "_auction" in data:
+            listing = data.get("_listing") or {}
+            auction = data.get("_auction") or {}
+            ingestion = data.get("_ingestion") or {}
+
+            # Shipping from listing (already converted to dollars in _try_json_api)
+            if data.get("shipping_cost"):
+                lot.shipping_cost = lot.shipping_cost or data["shipping_cost"]
+            else:
+                shipping = listing.get("shipping") or {}
+                flat = shipping.get("flatRateCost")
+                if flat:
+                    lot.shipping_cost = lot.shipping_cost or flat / 100
+
+            # Lot ID from listing prettyId / formattedPrettyId
+            lot.lot_id = lot.lot_id or listing.get("prettyId") or listing.get("formattedPrettyId")
+
+            # Current bid from auction (all B-Stock API monetary fields are in cents)
+            win_bid = auction.get("winningBidAmount") or auction.get("currentBidAmount")
+            if win_bid:
+                lot.current_bid = lot.current_bid or win_bid / 100
+
+            # Buyer's premium from auction
+            premium = auction.get("buyersPremiumRate") or auction.get("buyerPremiumRate")
+            if premium:
+                try:
+                    rate = float(premium)
+                    lot.buyers_premium_rate = rate / 100 if rate > 1 else rate
+                except Exception:
+                    pass
+
+            # Parse auction title: e.g. "Lot (DAL-6693732): 12 Apple Watch Mixed - MSRP $4,489"
+            title_raw = (auction.get("attributes") or {}).get("title", "") or auction.get("title", "")
+            if title_raw:
+                # Clean title: remove the lot-code prefix like "(DAL-6693732): "
+                clean_title = re.sub(r"^\s*\([^)]*\)\s*:\s*", "", title_raw).strip()
+                lot.title = lot.title or clean_title
+
+                # Extract unit count from title
+                units_m = re.search(r"\b(\d+)\s+(?:unit|item|pc|piece|watch|phone|tablet|laptop|device)", title_raw, re.IGNORECASE)
+                # Extract total MSRP from title
+                msrp_m = re.search(r"(?:msrp|retail|value)[^\$]*\$\s*([\d,]+)", title_raw, re.IGNORECASE)
+                if not msrp_m:
+                    msrp_m = re.search(r"\$\s*([\d,]+(?:\.\d+)?)\s*(?:msrp|retail|total)", title_raw, re.IGNORECASE)
+                # Extract condition from title
+                cond_m = re.search(
+                    r"\b(new|open[\s-]?box|refurb\w*|used|salvage|untested|customer return|like new)\b",
+                    title_raw, re.IGNORECASE
+                )
+
+                unit_count = int(units_m.group(1)) if units_m else None
+                total_msrp = clean_price(msrp_m.group(1)) if msrp_m else None
+                condition_text = cond_m.group(1) if cond_m else "Unknown"
+
+                # Try to get products from ingestion API response
+                ingestion_items = (
+                    ingestion.get("items") or ingestion.get("products")
+                    or ingestion.get("lots") or ingestion.get("manifest") or []
+                )
+                for item in ingestion_items:
+                    p = self._item_to_product(item)
+                    if p:
+                        products.append(p)
+
+                # If ingestion gave nothing, synthesize from title metadata
+                if not products and (unit_count or total_msrp or clean_title):
+                    per_unit_msrp = None
+                    if total_msrp and unit_count:
+                        per_unit_msrp = total_msrp / unit_count
+                    elif total_msrp:
+                        per_unit_msrp = total_msrp
+
+                    products.append(Product(
+                        name=clean_title or title_raw,
+                        condition=normalize_condition(condition_text),
+                        quantity=unit_count or 1,
+                        listed_msrp=per_unit_msrp,
+                    ))
+                    lot.product_count = unit_count or 1
+
+            return products
+
+        # --- Legacy / old format (offerings, products arrays) ---
         lot.lot_id = lot.lot_id or data.get("prettyId") or data.get("formattedPrettyId")
 
         shipping = data.get("shipping") or {}
@@ -302,7 +393,6 @@ class BStockScraper:
             if cost:
                 lot.shipping_cost = lot.shipping_cost or clean_price(str(cost))
 
-        # pricingStrategy → look for current bid in saleMetrics
         sale_metrics = data.get("saleMetrics") or {}
         if isinstance(sale_metrics, dict):
             bid = (
@@ -312,11 +402,9 @@ class BStockScraper:
             )
             lot.current_bid = lot.current_bid or clean_price(str(bid or ""))
 
-        # Offerings → products
         for offering in (data.get("offerings") or []):
             if not isinstance(offering, dict):
                 continue
-            # Offering may have title, shipping, premium
             lot.title = lot.title or offering.get("title") or offering.get("name")
             premium = offering.get("buyersPremium") or offering.get("buyerPremium")
             if premium:
@@ -325,7 +413,6 @@ class BStockScraper:
                     lot.buyers_premium_rate = rate / 100 if rate > 1 else rate
                 except Exception:
                     pass
-
             items = (
                 offering.get("items") or offering.get("products")
                 or offering.get("manifest") or offering.get("lots") or []
@@ -335,7 +422,6 @@ class BStockScraper:
                 if p:
                     products.append(p)
 
-        # Direct products list
         for item in (data.get("products") or []):
             p = self._item_to_product(item)
             if p:
