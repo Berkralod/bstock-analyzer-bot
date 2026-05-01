@@ -6,7 +6,10 @@ import config
 
 class HaikuClient:
     def __init__(self) -> None:
-        self._client = anthropic.AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY)
+        self._client = anthropic.AsyncAnthropic(
+            api_key=config.ANTHROPIC_API_KEY,
+            timeout=30.0,  # default is 600s — way too long
+        )
 
     async def normalize_product_names(self, names: List[str]) -> List[Dict[str, Any]]:
         prompt = (
