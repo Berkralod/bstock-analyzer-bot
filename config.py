@@ -16,7 +16,7 @@ BRIGHTDATA_USERNAME: str = os.getenv("BRIGHTDATA_USERNAME", "")  # brd-customer-
 BRIGHTDATA_PASSWORD: str = os.getenv("BRIGHTDATA_PASSWORD", "")
 # Legacy fallback (old single-key format, likely wrong for proxy auth)
 BRIGHTDATA_API_KEY: str = os.getenv("BRIGHTDATA_API_KEY", "")
-BRIGHTDATA_ZONE: str = os.getenv("BRIGHTDATA_ZONE", "web_unlocker1")
+BRIGHTDATA_ZONE: str = os.getenv("BRIGHTDATA_ZONE") or "web_unlocker1"
 
 # eBay Finding API (free — get App ID from developer.ebay.com)
 EBAY_APP_ID: str = os.getenv("EBAY_APP_ID", "")
