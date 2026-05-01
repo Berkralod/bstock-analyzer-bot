@@ -191,102 +191,82 @@ async def cmd_credentials(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def cmd_debug(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Usage: /debug <bstock_url>  — diagnose why scraping fails"""
+    """Usage: /debug <bstock_url>"""
     if not _is_allowed(update):
         return
 
     text = " ".join(context.args) if context.args else ""
     url_match = BSTOCK_URL_PATTERN.search(text)
     if not url_match:
-        await update.message.reply_text("Kullanım: `/debug <bstock_url>`", parse_mode="Markdown")
+        await update.message.reply_text("Kullanim: /debug <bstock_url>")
         return
 
     url = url_match.group(0)
     uid = extract_lot_id(url)
     email = getattr(config, "BSTOCK_EMAIL", "")
-    password = getattr(config, "BSTOCK_PASSWORD", "")
 
-    msg = await update.message.reply_text("🔬 Debug başlıyor...")
-    lines = [f"🔬 *Debug Raporu*", f"URL: `{url[-40:]}`", f"UID: `{uid}`", f"Email: `{email or 'YOK'}`", ""]
+    msg = await update.message.reply_text("Debuglanıyor...")
+    lines = [
+        "=== DEBUG ===",
+        f"UID: {uid}",
+        f"Email: {email or 'YOK'}",
+    ]
 
     try:
-        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
-            # Step 1: Homepage
-            try:
-                r = await client.get(BSTOCK_HOME, headers=HEADERS)
-                lines.append(f"1\\. Homepage: HTTP {r.status_code}, {len(r.text)} karakter")
-            except Exception as e:
-                lines.append(f"1\\. Homepage: HATA {e}")
+        import json as _json
+        from scraper.bstock import BStockScraper as _BS
 
-            # Step 2: Login
-            login_ok = False
-            if email and password:
-                try:
-                    r = await client.post(
-                        LOGIN_URL,
-                        json={"email": email, "password": password},
-                        headers={**HEADERS, "Content-Type": "application/json"},
-                    )
-                    body_preview = r.text[:200].replace("`", "'")
-                    lines.append(f"2\\. Login API: HTTP {r.status_code}")
-                    lines.append(f"   Yanıt: `{body_preview}`")
-                    login_ok = r.status_code in (200, 201, 302)
-                except Exception as e:
-                    lines.append(f"2\\. Login: HATA {e}")
-            else:
-                lines.append("2\\. Login: email/şifre girilmemiş")
-
-            # Step 3: Fetch lot page
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            # Step 1: Lot page only (skip heavy homepage fetch)
             try:
                 r = await client.get(url, headers=HEADERS)
-                has_next_data = "__NEXT_DATA__" in r.text
-                has_products = any(k in r.text for k in ["manifest", "products", "items", "\"name\""])
-                lines.append(f"3\\. Lot sayfası: HTTP {r.status_code}, {len(r.text)} karakter")
-                lines.append(f"   \\_\\_NEXT\\_DATA\\_\\_: {'✅' if has_next_data else '❌'}")
-                lines.append(f"   Ürün verisi işareti: {'✅' if has_products else '❌'}")
+                lines.append(f"Lot HTTP: {r.status_code}, {len(r.text)} karakter")
+                lot_html = r.text
             except Exception as e:
-                lines.append(f"3\\. Lot sayfası: HATA {e}")
+                lines.append(f"Lot HATA: {e}")
+                lot_html = ""
 
-            # Step 4: Show __NEXT_DATA__ key structure
-            from scraper.bstock import BStockScraper as _BS
-            lot_html = None
-            try:
-                r4 = await client.get(url, headers=HEADERS)
-                lot_html = r4.text
-            except Exception:
-                pass
+            # Step 2: __NEXT_DATA__ structure
             if lot_html:
                 nd = _BS._extract_next_data(lot_html)
                 if nd:
+                    lines.append(f"NEXT_DATA: {len(nd)} karakter")
                     try:
-                        import json as _json
                         nd_obj = _json.loads(nd)
                         page_props = nd_obj.get("props", {}).get("pageProps", {})
+                        lines.append(f"pageProps keys: {list(page_props.keys())}")
 
-                        # Show hostMap values
                         host_map = page_props.get("hostMap", {})
-                        lines.append(f"4\\. hostMap değerleri:")
+                        lines.append("--- hostMap ---")
                         for k, v in host_map.items():
-                            safe_v = str(v).replace("_", "\\_").replace(".", "\\.")
-                            lines.append(f"  `{k}`: {safe_v}")
+                            lines.append(f"{k}: {v}")
 
-                        # Show accessToken
                         token = page_props.get("accessToken")
-                        lines.append(f"5\\. accessToken: `{str(token)[:60]}`")
-
-                        # Show all pageProps top-level keys
-                        lines.append(f"6\\. pageProps keys: {list(page_props.keys())}")
+                        lines.append(f"accessToken: {str(token)[:80]}")
 
                     except Exception as ex:
-                        lines.append(f"4\\. parse hata: {ex}")
+                        lines.append(f"JSON parse hata: {ex}")
                 else:
-                    lines.append("4\\. \\_\\_NEXT\\_DATA\\_\\_ bulunamadı")
+                    lines.append("NEXT_DATA: bulunamadi")
+
+            # Step 3: Try B-Stock BAPI login
+            if email:
+                try:
+                    r2 = await client.post(
+                        "https://bapi.bstock.com/auth/token",
+                        json={"email": email, "password": getattr(config, "BSTOCK_PASSWORD", "")},
+                        headers={**HEADERS, "Content-Type": "application/json"},
+                        timeout=8.0,
+                    )
+                    lines.append(f"BAPI login: HTTP {r2.status_code}, {r2.text[:150]}")
+                except Exception as e:
+                    lines.append(f"BAPI login hata: {str(e)[:100]}")
 
     except Exception as e:
-        lines.append(f"❌ Genel hata: {e}")
+        lines.append(f"GENEL HATA: {e}")
 
     report = "\n".join(lines)
-    await msg.edit_text(report[:4000], parse_mode="MarkdownV2")
+    await msg.edit_text(report[:4000])
 
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
