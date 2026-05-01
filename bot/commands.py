@@ -271,27 +271,32 @@ async def cmd_debug(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                         lines.append(f"shipping: {listing_data.get('shipping')}")
                         lines.append(f"saleMetrics: {listing_data.get('saleMetrics')}")
 
-                        # Try docserv manifest download paths
-                        for du in [
-                            f"https://docserv.bstock.com/v1/manifests/{uid}/items",
-                            f"https://docserv.bstock.com/v1/manifests/{uid}",
-                            f"https://docserv.bstock.com/v1/manifests/{uid}/download",
-                            f"https://docserv.bstock.com/v1/documents?docType=MANIFEST&listingId={uid}",
-                            f"https://docserv.bstock.com/v1/documents?docType=MANIFEST&lotId={lot_id}",
-                            f"https://ingestion.bstock.com/v1/lot-items?listingId={uid}",
-                            f"https://ingestion.bstock.com/v1/lot-items?lotId={lot_id}",
-                            f"https://bridge.bstock.com/v1/listings/{uid}/manifest",
-                            f"https://bridge.bstock.com/v1/listings/{uid}/items",
+                        # Docserv: list ALL documents for this listing
+                        try:
+                            rd_all = await client.get(
+                                f"https://docserv.bstock.com/v1/documents?listingId={uid}",
+                                headers=listing_headers, timeout=8.0
+                            )
+                            lines.append(f"docserv ALL docs: HTTP {rd_all.status_code}")
+                            if rd_all.status_code == 200:
+                                dd = rd_all.json()
+                                docs_list = dd.get("documents", [])
+                                lines.append(f"  total docs: {len(docs_list)}")
+                                for doc in docs_list:
+                                    lines.append(f"  doc: {doc.get('filename')} | type={doc.get('contentType')} | docType={doc.get('docType')} | url={str(doc.get('url',''))[-50:]}")
+                        except Exception as e:
+                            lines.append(f"docserv ALL ERR: {e}")
+
+                        # Try auction service with query params for current bid
+                        for au in [
+                            f"https://auction.bstock.com/v1/auctions?listingId={uid}",
+                            f"https://auction.bstock.com/v1/auctions?prettyId={pretty_id}",
                         ]:
                             try:
-                                rd = await client.get(du, headers=listing_headers, timeout=7.0)
-                                service = du.split("//")[1].split(".")[0]
-                                path = du.split("com")[1][:45]
-                                lines.append(f"[{rd.status_code}] {service}{path} | {rd.text[:80]}")
-                                if rd.status_code == 200:
-                                    break
+                                ra = await client.get(au, headers=listing_headers, timeout=7.0)
+                                lines.append(f"auction {au.split('?')[1][:20]}: [{ra.status_code}] {ra.text[:120]}")
                             except Exception as e:
-                                lines.append(f"ERR: {str(e)[:50]}")
+                                lines.append(f"auction ERR: {str(e)[:50]}")
 
                     else:
                         lines.append(r3.text[:200])
