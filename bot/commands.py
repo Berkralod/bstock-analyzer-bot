@@ -247,21 +247,37 @@ async def cmd_debug(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             except Exception as e:
                 lines.append(f"3\\. Lot sayfası: HATA {e}")
 
-            # Step 4: Try JSON APIs
-            if uid:
-                api_patterns = [
-                    f"https://bstock.com/api/listings/{uid}",
-                    f"https://bstock.com/api/v1/listings/{uid}",
-                    f"https://bstock.com/api/auctions/{uid}",
-                ]
-                for api_url in api_patterns:
+            # Step 4: Show __NEXT_DATA__ key structure
+            from scraper.bstock import BStockScraper as _BS
+            lot_html = None
+            try:
+                r4 = await client.get(url, headers=HEADERS)
+                lot_html = r4.text
+            except Exception:
+                pass
+            if lot_html:
+                nd = _BS._extract_next_data(lot_html)
+                if nd:
                     try:
-                        r = await client.get(api_url, headers={**HEADERS, "Accept": "application/json"})
-                        lines.append(f"4\\. API `{api_url[-35:]}`: HTTP {r.status_code}, {len(r.text)} karakter")
-                        if r.status_code == 200:
-                            lines.append(f"   Yanıt: `{r.text[:100].replace('`', chr(39))}`")
-                    except Exception as e:
-                        lines.append(f"4\\. API hata: {str(e)[:80]}")
+                        import json as _json
+                        nd_obj = _json.loads(nd)
+                        def _keys(d, depth=0):
+                            if depth > 3 or not isinstance(d, dict):
+                                return []
+                            out = []
+                            for k, v in list(d.items())[:15]:
+                                vtype = type(v).__name__
+                                vlen = f"[{len(v)}]" if isinstance(v, (list, dict)) else ""
+                                out.append("  " * depth + f"`{k}` {vtype}{vlen}")
+                                out.extend(_keys(v, depth + 1))
+                            return out
+                        key_lines = _keys(nd_obj)[:40]
+                        lines.append(f"4\\. \\_\\_NEXT\\_DATA\\_\\_ keys \\({len(nd)} karakter\\):")
+                        lines.extend(key_lines)
+                    except Exception as ex:
+                        lines.append(f"4\\. \\_\\_NEXT\\_DATA\\_\\_ parse hata: {ex}")
+                else:
+                    lines.append("4\\. \\_\\_NEXT\\_DATA\\_\\_ bulunamadı")
 
     except Exception as e:
         lines.append(f"❌ Genel hata: {e}")

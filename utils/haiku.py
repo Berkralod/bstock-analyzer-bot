@@ -67,3 +67,26 @@ class HaikuClient:
         if text.startswith("```"):
             text = text.split("\n", 1)[1].rsplit("```", 1)[0]
         return json.loads(text)
+
+    async def parse_bstock_next_data(self, next_data_json: str) -> Dict[str, Any]:
+        """Parse B-Stock __NEXT_DATA__ JSON to extract lot and product info."""
+        prompt = (
+            "This is the __NEXT_DATA__ JSON from a B-Stock lot page (Next.js app). "
+            "Extract lot data and return JSON with:\n"
+            '- "title": lot title string\n'
+            '- "current_bid": number or null\n'
+            '- "shipping_cost": number or null\n'
+            '- "buyers_premium_rate": decimal (e.g. 0.15) or null\n'
+            '- "products": array of {name, condition, quantity, msrp} — find ALL items/products/manifest entries\n'
+            '- "manifest_url": CSV or PDF download URL or null\n\n'
+            f"__NEXT_DATA__:\n{next_data_json[:40000]}\n\nReturn ONLY valid JSON, no markdown."
+        )
+        message = await self._client.messages.create(
+            model=config.HAIKU_MODEL,
+            max_tokens=8192,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = message.content[0].text.strip()
+        if text.startswith("```"):
+            text = text.split("\n", 1)[1].rsplit("```", 1)[0]
+        return json.loads(text)

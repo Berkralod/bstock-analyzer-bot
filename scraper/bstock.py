@@ -193,6 +193,46 @@ class BStockScraper:
         lot.compute_totals()
         return lot
 
+    @staticmethod
+    def _extract_next_data(html: str) -> str | None:
+        """Pull raw __NEXT_DATA__ JSON string out of HTML."""
+        start = html.find('"__NEXT_DATA__"')
+        if start == -1:
+            start = html.find("id=\"__NEXT_DATA__\"")
+            if start == -1:
+                return None
+        # Find the script tag content
+        brace = html.find("{", start)
+        if brace == -1:
+            return None
+        depth, i = 0, brace
+        while i < len(html):
+            if html[i] == "{":
+                depth += 1
+            elif html[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    return html[brace:i + 1]
+            i += 1
+        return None
+
+    def _apply_parsed(self, parsed: dict, lot: Lot, products: list) -> list:
+        lot.title = lot.title or parsed.get("title")
+        lot.current_bid = lot.current_bid or parsed.get("current_bid")
+        lot.shipping_cost = lot.shipping_cost or parsed.get("shipping_cost")
+        if parsed.get("buyers_premium_rate"):
+            lot.buyers_premium_rate = parsed["buyers_premium_rate"]
+        lot.manifest_url = lot.manifest_url or parsed.get("manifest_url")
+        result = list(products)
+        for p_data in parsed.get("products", []):
+            result.append(Product(
+                name=p_data.get("name", "Unknown"),
+                condition=normalize_condition(p_data.get("condition", "")),
+                quantity=int(p_data.get("quantity") or 1),
+                listed_msrp=clean_price(str(p_data.get("msrp", "") or "")),
+            ))
+        return result
+
     async def _parse(self, url: str, html: str, json_data: dict | None) -> Lot:
         lot = Lot(url=url, lot_id=extract_lot_id(url))
 
@@ -203,27 +243,29 @@ class BStockScraper:
                 return lot
 
         if html:
-            products = self._parse_structured(BeautifulSoup(html, "lxml"), lot)
+            soup = BeautifulSoup(html, "lxml")
+            products = self._parse_structured(soup, lot)
+
             if len(products) < 2:
+                # Try __NEXT_DATA__ via Haiku (targeted — not raw 118k HTML)
+                next_data_str = self._extract_next_data(html)
+                if next_data_str:
+                    try:
+                        parsed = await self._haiku.parse_bstock_next_data(next_data_str)
+                        if parsed.get("products"):
+                            products = self._apply_parsed(parsed, lot, products)
+                    except Exception:
+                        pass
+
+            if len(products) < 2:
+                # Final fallback: Haiku on first 8k of raw HTML
                 try:
                     parsed = await self._haiku.parse_bstock_html(html)
                     if parsed.get("products"):
-                        lot.title = lot.title or parsed.get("title")
-                        lot.current_bid = lot.current_bid or parsed.get("current_bid")
-                        lot.shipping_cost = lot.shipping_cost or parsed.get("shipping_cost")
-                        if not products:
-                            if parsed.get("buyers_premium_rate"):
-                                lot.buyers_premium_rate = parsed["buyers_premium_rate"]
-                            lot.manifest_url = parsed.get("manifest_url")
-                            for p_data in parsed.get("products", []):
-                                products.append(Product(
-                                    name=p_data.get("name", "Unknown"),
-                                    condition=normalize_condition(p_data.get("condition", "")),
-                                    quantity=int(p_data.get("quantity", 1)),
-                                    listed_msrp=clean_price(str(p_data.get("msrp", "") or "")),
-                                ))
+                        products = self._apply_parsed(parsed, lot, products)
                 except Exception:
                     pass
+
             lot.products = products
 
         return lot
