@@ -389,6 +389,81 @@ async def cmd_debug(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await msg.edit_text(report[:4000])
 
 
+async def cmd_testebay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Usage: /testebay Apple Watch Ultra"""
+    if not _is_allowed(update):
+        return
+    query = " ".join(context.args) if context.args else "Apple Watch Ultra"
+    msg = await update.message.reply_text(f"eBay testi: '{query}' aranıyor...")
+    lines = [f"Query: {query}"]
+
+    import config as _cfg
+    bd_key = getattr(_cfg, "BRIGHTDATA_API_KEY", "")
+    bd_zone = getattr(_cfg, "BRIGHTDATA_ZONE", "web_unlocker1")
+    ebay_app_id = getattr(_cfg, "EBAY_APP_ID", "")
+    lines.append(f"BrightData key: {'SET' if bd_key else 'MISSING'}")
+    lines.append(f"eBay App ID: {'SET' if ebay_app_id else 'MISSING'}")
+
+    # Test 1: eBay Finding API
+    if ebay_app_id:
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                params = {
+                    "OPERATION-NAME": "findCompletedItems",
+                    "SERVICE-VERSION": "1.0.0",
+                    "SECURITY-APPNAME": ebay_app_id,
+                    "RESPONSE-DATA-FORMAT": "JSON",
+                    "keywords": query,
+                    "itemFilter(0).name": "SoldItemsOnly",
+                    "itemFilter(0).value": "true",
+                    "paginationInput.entriesPerPage": "5",
+                }
+                r = await client.get("https://svcs.ebay.com/services/search/FindingService/v1", params=params)
+                lines.append(f"Finding API: HTTP {r.status_code} | {r.text[:200]}")
+        except Exception as e:
+            lines.append(f"Finding API ERR: {e}")
+
+    # Test 2: eBay direct (no proxy)
+    try:
+        async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
+            r = await client.get(
+                "https://www.ebay.com/sch/i.html",
+                params={"_nkw": query, "LH_Complete": "1", "LH_Sold": "1", "_ipg": "5"},
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36"},
+            )
+            lines.append(f"eBay direct: HTTP {r.status_code}, {len(r.text)} chars")
+            if r.status_code == 200:
+                from bs4 import BeautifulSoup as _BS
+                prices = [el.get_text(strip=True) for el in _BS(r.text, "lxml").select(".s-item__price")[:5]]
+                lines.append(f"Prices found: {prices}")
+    except Exception as e:
+        lines.append(f"eBay direct ERR: {str(e)[:100]}")
+
+    # Test 3: eBay via BrightData
+    if bd_key:
+        try:
+            proxy_url = f"http://zone-{bd_zone}:{bd_key}@brd.superproxy.io:22225"
+            async with httpx.AsyncClient(
+                proxies={"https://": proxy_url, "http://": proxy_url},
+                timeout=httpx.Timeout(connect=5.0, read=20.0, write=5.0, pool=3.0),
+                verify=False, follow_redirects=True,
+            ) as client:
+                r = await client.get(
+                    "https://www.ebay.com/sch/i.html",
+                    params={"_nkw": query, "LH_Complete": "1", "LH_Sold": "1", "_ipg": "5"},
+                    headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36"},
+                )
+                lines.append(f"eBay BrightData: HTTP {r.status_code}, {len(r.text)} chars")
+                if r.status_code == 200:
+                    from bs4 import BeautifulSoup as _BS2
+                    prices2 = [el.get_text(strip=True) for el in _BS2(r.text, "lxml").select(".s-item__price")[:5]]
+                    lines.append(f"Prices found: {prices2}")
+        except Exception as e:
+            lines.append(f"eBay BrightData ERR: {str(e)[:150]}")
+
+    await msg.edit_text("\n".join(lines)[:4000])
+
+
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_allowed(update):
         return
