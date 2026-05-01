@@ -464,25 +464,26 @@ async def cmd_testebay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 _soup = _BS2(_r.text, "lxml")
                 prices3 = [el.get_text(strip=True) for el in _soup.select(".s-item__price")[:5]]
                 lines.append(f"Prices (.s-item__price): {prices3}")
-                import re as _re, json as _json
-                # Extract currentPrice values from embedded script JSON
-                scripts = _soup.find_all("script")
-                lines.append(f"Script tags: {len(scripts)}")
-                extracted_prices = []
-                for sc in scripts:
-                    sc_text = sc.string or ""
-                    if "currentPrice" in sc_text:
-                        # Show surrounding context for first hit
-                        idx = sc_text.find("currentPrice")
-                        lines.append(f"currentPrice context: {sc_text[idx-5:idx+120]}")
-                        # Extract all currentPrice values
-                        hits = _re.findall(r'"currentPrice"\s*:\s*\{[^}]*"value"\s*:\s*"?([0-9.]+)"?', sc_text)
-                        if not hits:
-                            hits = _re.findall(r'"currentPrice"\s*:\s*([0-9.]+)', sc_text)
-                        lines.append(f"currentPrice values ({len(hits)}): {hits[:10]}")
-                        extracted_prices = [float(h) for h in hits if h]
-                        break
-                lines.append(f"Extracted prices: {extracted_prices[:10]}")
+                import re as _re
+                raw = _r.text
+                # Search raw HTML directly (BS .string fails on large scripts)
+                if "currentPrice" in raw:
+                    idx = raw.find("currentPrice")
+                    lines.append(f"currentPrice context: {raw[idx-5:idx+150]}")
+                    hits = _re.findall(r'"currentPrice"\s*:\s*\{[^}]*?"value"\s*:\s*"?([0-9.]+)"?', raw)
+                    if not hits:
+                        hits = _re.findall(r'"currentPrice"\s*:\s*([0-9.]+)', raw)
+                    lines.append(f"currentPrice values ({len(hits)}): {hits[:10]}")
+                elif "convertedCurrentPrice" in raw:
+                    idx = raw.find("convertedCurrentPrice")
+                    lines.append(f"convertedCurrentPrice context: {raw[idx-5:idx+150]}")
+                    hits = _re.findall(r'"convertedCurrentPrice"\s*:\s*\{[^}]*?"value"\s*:\s*"?([0-9.]+)"?', raw)
+                    lines.append(f"convertedCurrentPrice values ({len(hits)}): {hits[:10]}")
+                else:
+                    # Show what price-like JSON keys exist
+                    price_keys = _re.findall(r'"(\w*[Pp]rice\w*)"\s*:', raw)
+                    unique_keys = list(dict.fromkeys(price_keys))[:20]
+                    lines.append(f"Price-like JSON keys in page: {unique_keys}")
     except Exception as e:
         lines.append(f"eBay BrightData ERR: {type(e).__name__}: {repr(e)[:300]}")
 
