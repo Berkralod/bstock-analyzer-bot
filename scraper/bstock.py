@@ -86,27 +86,62 @@ class BStockScraper:
         return h
 
     async def _try_json_api(self, uid: str, client: httpx.AsyncClient) -> dict | None:
-        """Try B-Stock microservice listing/auction API endpoints."""
-        for pattern in LISTING_PATTERNS:
-            url = pattern.format(uid=uid)
-            try:
-                resp = await client.get(
-                    url,
-                    headers={**self._auth_headers(), "Accept": "application/json"},
-                    timeout=12.0,
-                )
-                if resp.status_code == 200:
-                    ct = resp.headers.get("content-type", "")
-                    if "json" in ct:
-                        return resp.json()
-                    try:
-                        data = resp.json()
-                        if isinstance(data, dict):
-                            return data
-                    except Exception:
-                        pass
-            except Exception:
-                continue
+        """
+        B-Stock API flow (discovered via debug):
+        1. GET listing.bstock.com/v1/listings/{uid} → listing metadata + lotId
+        2. GET offering.bstock.com/v1/offerings?listingId={uid} → offerings with products
+        """
+        headers = {**self._auth_headers(), "Accept": "application/json"}
+
+        # Step 1: Get listing metadata
+        listing_data = None
+        try:
+            r = await client.get(
+                f"{LISTING_BASE}/v1/listings/{uid}",
+                headers=headers,
+                timeout=12.0,
+            )
+            if r.status_code == 200:
+                listing_data = r.json()
+        except Exception:
+            pass
+
+        # Step 2: Get offerings (contains products)
+        try:
+            r = await client.get(
+                f"https://offering.bstock.com/v1/offerings?listingId={uid}",
+                headers=headers,
+                timeout=12.0,
+            )
+            if r.status_code == 200:
+                data = r.json()
+                offerings = data.get("offerings", [])
+                if offerings and listing_data:
+                    # Merge listing metadata with offering product data
+                    result = dict(listing_data)
+                    result["offerings"] = offerings
+                    # Flatten first offering's items to top-level products
+                    for offering in offerings:
+                        items = (
+                            offering.get("items")
+                            or offering.get("products")
+                            or offering.get("lots")
+                            or offering.get("manifest")
+                            or []
+                        )
+                        if items:
+                            result["products"] = items
+                            break
+                    return result
+                elif offerings:
+                    return {"offerings": offerings}
+        except Exception:
+            pass
+
+        # Return listing metadata alone (will trigger Haiku fallback)
+        if listing_data:
+            return listing_data
+
         return None
 
     async def _fetch_url(self, url: str) -> tuple[str, dict | None]:
@@ -255,74 +290,89 @@ class BStockScraper:
         return lot
 
     def _parse_json(self, data: dict, lot: Lot) -> list:
-        """Parse B-Stock internal API JSON response."""
+        """Parse B-Stock listing/offering API JSON response."""
         products = []
 
-        # Unwrap common envelope patterns
-        payload = data
-        for key in ("data", "result", "listing", "auction", "lot"):
-            if isinstance(data.get(key), dict):
-                payload = data[key]
-                break
+        # Extract listing-level metadata
+        lot.lot_id = lot.lot_id or data.get("prettyId") or data.get("formattedPrettyId")
 
-        lot.title = lot.title or payload.get("title") or payload.get("name") or payload.get("lotTitle")
-        lot.current_bid = lot.current_bid or clean_price(str(payload.get("currentBid") or payload.get("current_bid") or ""))
-        lot.shipping_cost = lot.shipping_cost or clean_price(str(payload.get("shippingCost") or payload.get("shipping_cost") or ""))
+        shipping = data.get("shipping") or {}
+        if isinstance(shipping, dict):
+            cost = shipping.get("cost") or shipping.get("price") or shipping.get("amount")
+            if cost:
+                lot.shipping_cost = lot.shipping_cost or clean_price(str(cost))
 
-        premium = payload.get("buyersPremium") or payload.get("buyers_premium") or payload.get("buyerPremium")
-        if premium:
-            try:
-                rate = float(str(premium).replace("%", "").strip())
-                lot.buyers_premium_rate = rate / 100 if rate > 1 else rate
-            except Exception:
-                pass
+        # pricingStrategy → look for current bid in saleMetrics
+        sale_metrics = data.get("saleMetrics") or {}
+        if isinstance(sale_metrics, dict):
+            bid = (
+                sale_metrics.get("currentBid")
+                or sale_metrics.get("current_bid")
+                or sale_metrics.get("highBid")
+            )
+            lot.current_bid = lot.current_bid or clean_price(str(bid or ""))
 
-        # Find products list under various keys
-        items = (
-            payload.get("products")
-            or payload.get("items")
-            or payload.get("manifest")
-            or payload.get("manifestItems")
-            or payload.get("lots")
-            or []
-        )
-        if isinstance(items, dict):
-            items = items.get("items") or items.get("data") or []
-
-        for item in items:
-            if not isinstance(item, dict):
+        # Offerings → products
+        for offering in (data.get("offerings") or []):
+            if not isinstance(offering, dict):
                 continue
-            name = (
-                item.get("productName") or item.get("name") or item.get("title")
-                or item.get("description") or ""
+            # Offering may have title, shipping, premium
+            lot.title = lot.title or offering.get("title") or offering.get("name")
+            premium = offering.get("buyersPremium") or offering.get("buyerPremium")
+            if premium:
+                try:
+                    rate = float(str(premium).replace("%", "").strip())
+                    lot.buyers_premium_rate = rate / 100 if rate > 1 else rate
+                except Exception:
+                    pass
+
+            items = (
+                offering.get("items") or offering.get("products")
+                or offering.get("manifest") or offering.get("lots") or []
             )
-            if not name or len(name) < 3:
-                continue
-            condition_text = (
-                item.get("condition") or item.get("conditionName")
-                or item.get("grade") or ""
-            )
-            qty = 1
-            for qk in ("quantity", "qty", "count", "units"):
-                if item.get(qk):
-                    try:
-                        qty = int(item[qk])
-                        break
-                    except Exception:
-                        pass
-            msrp_raw = (
-                item.get("msrp") or item.get("retailPrice") or item.get("retail_price")
-                or item.get("listPrice") or ""
-            )
-            msrp = clean_price(str(msrp_raw))
-            products.append(Product(
-                name=name,
-                condition=normalize_condition(condition_text),
-                quantity=qty,
-                listed_msrp=msrp,
-            ))
+            for item in items:
+                p = self._item_to_product(item)
+                if p:
+                    products.append(p)
+
+        # Direct products list
+        for item in (data.get("products") or []):
+            p = self._item_to_product(item)
+            if p:
+                products.append(p)
 
         return products
+
+    def _item_to_product(self, item: dict) -> Product | None:
+        if not isinstance(item, dict):
+            return None
+        name = (
+            item.get("productName") or item.get("name") or item.get("title")
+            or item.get("description") or ""
+        )
+        if not name or len(name) < 3:
+            return None
+        condition_text = (
+            item.get("condition") or item.get("conditionName") or item.get("grade") or ""
+        )
+        qty = 1
+        for qk in ("quantity", "qty", "count", "units"):
+            if item.get(qk):
+                try:
+                    qty = int(item[qk])
+                    break
+                except Exception:
+                    pass
+        msrp_raw = (
+            item.get("msrp") or item.get("retailPrice") or item.get("retail_price")
+            or item.get("listPrice") or ""
+        )
+        return Product(
+            name=name,
+            condition=normalize_condition(condition_text),
+            quantity=qty,
+            listed_msrp=clean_price(str(msrp_raw)),
+        )
 
     def _parse_structured(self, soup: BeautifulSoup, lot: Lot) -> list:
         products = []
