@@ -464,17 +464,23 @@ async def cmd_testebay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 _soup = _BS2(_r.text, "lxml")
                 prices3 = [el.get_text(strip=True) for el in _soup.select(".s-item__price")[:5]]
                 lines.append(f"Prices (.s-item__price): {prices3}")
-                # Show class names of [class*='price'] elements
-                price_els = _soup.select("[class*='price']")
-                lines.append(f"[class*='price']: {len(price_els)} elements")
-                for el in price_els[:5]:
-                    lines.append(f"  tag={el.name} class={el.get('class')} text={el.get_text(strip=True)[:60]}")
-                # Try s-item containers
-                for sel in ["[class*='s-item']", "[class*='srp-item']", "[class*='item--large']"]:
-                    found = _soup.select(sel)
-                    lines.append(f"  {sel}: {len(found)} elements")
-                    if found:
-                        lines.append(f"    first class: {found[0].get('class')}")
+                import re as _re
+                # 1. Regex: dollar prices in raw text
+                dollar_prices = _re.findall(r'\$\s*(\d{1,5}(?:\.\d{2})?)', _r.text)
+                lines.append(f"Regex $prices in raw text: {dollar_prices[:10]}")
+                # 2. Look for embedded JSON price data in <script> tags
+                scripts = _soup.find_all("script")
+                lines.append(f"Script tags: {len(scripts)}")
+                for sc in scripts:
+                    sc_text = sc.string or ""
+                    if "currentPrice" in sc_text or "sellingStatus" in sc_text or '"price"' in sc_text:
+                        lines.append(f"  FOUND price JSON in script ({len(sc_text)} chars): ...{sc_text[sc_text.find('currentPrice')-20:sc_text.find('currentPrice')+80]}...")
+                        break
+                # 3. Check if __PRELOADED_STATE__ or similar exists
+                for marker in ["__PRELOADED_STATE__", "g_items", "window.searchPageProps", "searchResults"]:
+                    if marker in _r.text:
+                        idx = _r.text.find(marker)
+                        lines.append(f"  FOUND {marker} at {idx}: {_r.text[idx:idx+150]}")
     except Exception as e:
         lines.append(f"eBay BrightData ERR: {type(e).__name__}: {repr(e)[:300]}")
 
