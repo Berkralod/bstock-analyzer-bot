@@ -287,16 +287,42 @@ async def cmd_debug(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                         except Exception as e:
                             lines.append(f"docserv ALL ERR: {e}")
 
-                        # Try auction service with query params for current bid
-                        for au in [
-                            f"https://auction.bstock.com/v1/auctions?listingId={uid}",
-                            f"https://auction.bstock.com/v1/auctions?prettyId={pretty_id}",
-                        ]:
-                            try:
-                                ra = await client.get(au, headers=listing_headers, timeout=7.0)
-                                lines.append(f"auction {au.split('?')[1][:20]}: [{ra.status_code}] {ra.text[:120]}")
-                            except Exception as e:
-                                lines.append(f"auction ERR: {str(e)[:50]}")
+                        # Auction API - full data
+                        auction_id = None
+                        try:
+                            ra = await client.get(
+                                f"https://auction.bstock.com/v1/auctions?listingId={uid}",
+                                headers=listing_headers, timeout=8.0
+                            )
+                            lines.append(f"Auction: HTTP {ra.status_code}")
+                            if ra.status_code == 200:
+                                ad = ra.json()
+                                auctions = ad.get("auctions", [])
+                                lines.append(f"  count: {len(auctions)}")
+                                if auctions:
+                                    a0 = auctions[0]
+                                    auction_id = a0.get("_id")
+                                    lines.append(f"  auction _id: {auction_id}")
+                                    lines.append(f"  keys: {list(a0.keys())}")
+                                    lines.append(f"  full: {str(a0)[:400]}")
+                        except Exception as e:
+                            lines.append(f"Auction ERR: {e}")
+
+                        # Auction sub-endpoints for manifest/items
+                        if auction_id:
+                            for sub in [
+                                f"https://auction.bstock.com/v1/auctions/{auction_id}",
+                                f"https://auction.bstock.com/v1/auctions/{auction_id}/items",
+                                f"https://auction.bstock.com/v1/auctions/{auction_id}/manifest",
+                                f"https://auction.bstock.com/v1/auctions/{auction_id}/lots",
+                            ]:
+                                try:
+                                    rs = await client.get(sub, headers=listing_headers, timeout=7.0)
+                                    lines.append(f"[{rs.status_code}] {sub.split('auctions')[1]} | {rs.text[:120]}")
+                                    if rs.status_code == 200:
+                                        break
+                                except Exception as e:
+                                    lines.append(f"ERR: {str(e)[:50]}")
 
                     else:
                         lines.append(r3.text[:200])
