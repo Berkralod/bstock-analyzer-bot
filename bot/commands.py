@@ -206,58 +206,14 @@ async def cmd_debug(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     email = getattr(config, "BSTOCK_EMAIL", "")
 
     msg = await update.message.reply_text("Debuglanıyor...")
-    lines = [
-        "=== DEBUG ===",
-        f"UID: {uid}",
-        f"Email: {email or 'YOK'}",
-    ]
+    lines = ["=== DEBUG ===", f"UID: {uid}", f"Email: {email or 'YOK'}"]
 
     try:
         import json as _json
-        from scraper.bstock import BStockScraper as _BS
 
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-            # Step 1: Lot page only (skip heavy homepage fetch)
-            try:
-                r = await client.get(url, headers=HEADERS)
-                lines.append(f"Lot HTTP: {r.status_code}, {len(r.text)} karakter")
-                lot_html = r.text
-            except Exception as e:
-                lines.append(f"Lot HATA: {e}")
-                lot_html = ""
 
-            # Step 2: __NEXT_DATA__ structure
-            if lot_html:
-                nd = _BS._extract_next_data(lot_html)
-                if nd:
-                    lines.append(f"NEXT_DATA: {len(nd)} karakter")
-                    try:
-                        nd_obj = _json.loads(nd)
-                        page_props = nd_obj.get("props", {}).get("pageProps", {})
-                        lines.append(f"pageProps keys: {list(page_props.keys())}")
-
-                        host_map = page_props.get("hostMap", {})
-                        lines.append("--- hostMap ---")
-                        for k, v in host_map.items():
-                            lines.append(f"{k}: {v}")
-
-                        token = page_props.get("accessToken")
-                        lines.append(f"accessToken: {str(token)[:80]}")
-
-                        pub_env = page_props.get("publicEnvVars", {})
-                        lines.append("--- publicEnvVars ---")
-                        if isinstance(pub_env, dict):
-                            for k, v in pub_env.items():
-                                lines.append(f"{k}: {v}")
-                        else:
-                            lines.append(str(pub_env)[:500])
-
-                    except Exception as ex:
-                        lines.append(f"JSON parse hata: {ex}")
-                else:
-                    lines.append("NEXT_DATA: bulunamadi")
-
-            # Step 3: FusionAuth login with applicationId
+            # Step 1: FusionAuth login with applicationId
             pwd = getattr(config, "BSTOCK_PASSWORD", "")
             fa_app_id = "1b094c5f-c8a6-416c-8c62-4dc77ca88ce9"
             auth_token = None
@@ -276,7 +232,7 @@ async def cmd_debug(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 except Exception as e:
                     lines.append(f"AUTH hata: {str(e)[:100]}")
 
-            # Step 4: Listing API with auth token — show full key structure
+            # Step 2: Listing API with auth token
             if uid:
                 listing_headers = {**HEADERS, "Accept": "application/json"}
                 if auth_token:
@@ -290,16 +246,9 @@ async def cmd_debug(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                     if r3.status_code == 200:
                         listing_data = r3.json()
                         lot_id = listing_data.get("lotId")
-                        lines.append(f"Top keys: {list(listing_data.keys())}")
                         lines.append(f"lotId: {lot_id}")
-
-                        # Show all documents
-                        for i, doc in enumerate(listing_data.get("documents", [])):
-                            lines.append(f"doc[{i}]: {doc}")
-
-                        # Show all metadata
-                        for i, m in enumerate(listing_data.get("metadata", [])):
-                            lines.append(f"meta[{i}]: {str(m)[:120]}")
+                        lines.append(f"status: {listing_data.get('status')}")
+                        lines.append(f"docs: {[(d.get('docType'), d.get('url','')[-30:]) for d in listing_data.get('documents', [])]}")
 
                         # Try offering / lot APIs with lotId
                         if lot_id:
@@ -313,11 +262,13 @@ async def cmd_debug(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                             ]:
                                 try:
                                     rl = await client.get(lot_url, headers=listing_headers, timeout=8.0)
-                                    lines.append(f"[{rl.status_code}] {lot_url.split('com')[1]} | {rl.text[:120]}")
+                                    lines.append(f"[{rl.status_code}] {lot_url.split('com')[1]} | {rl.text[:150]}")
                                     if rl.status_code == 200:
+                                        rj = rl.json()
+                                        lines.append(f"  keys: {list(rj.keys()) if isinstance(rj, dict) else type(rj).__name__}")
                                         break
                                 except Exception as e:
-                                    lines.append(f"ERR {lot_url[-40:]}: {str(e)[:60]}")
+                                    lines.append(f"ERR: {str(e)[:60]}")
                     else:
                         lines.append(r3.text[:200])
                 except Exception as e:
