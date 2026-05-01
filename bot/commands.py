@@ -480,7 +480,7 @@ async def cmd_testebay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 body_text = str(body)[:800] if body else _r.text[:800]
                 lines.append(f"HTML snippet:\n{body_text}")
     except Exception as e:
-        lines.append(f"eBay BrightData ERR: {str(e)[:200]}")
+        lines.append(f"eBay BrightData ERR: {type(e).__name__}: {repr(e)[:300]}")
 
     await msg.edit_text("\n".join(lines)[:4000])
 
