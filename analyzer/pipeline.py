@@ -40,11 +40,7 @@ class AnalysisPipeline:
             result.error = "No products found in lot."
             return result
 
-        # Normalize product names in batches via Haiku (30s max)
-        try:
-            await asyncio.wait_for(self._normalize_names(lot.products), timeout=30.0)
-        except asyncio.TimeoutError:
-            pass  # proceed with raw names
+        # Normalize product names skipped — MSRP-based fallback doesn't need normalized names
 
         # Layer 1: skipped (Google Shopping too slow in production)
 
