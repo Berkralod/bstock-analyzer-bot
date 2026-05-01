@@ -43,8 +43,7 @@ class AnalysisPipeline:
         # Normalize product names in batches via Haiku
         await self._normalize_names(lot.products)
 
-        # Layer 1: Fake MSRP detection (all products, parallel)
-        await self._layer1.screen_all(lot.products)
+        # Layer 1: skipped (Google Shopping too slow in production)
 
         # Layer 2: Market price analysis (all products, parallel)
         product_analyses: List[ProductAnalysis] = await self._layer2.analyze_all(lot.products)
@@ -56,13 +55,7 @@ class AnalysisPipeline:
         for pa in product_analyses:
             pa.cost_per_unit = cost_per_unit
 
-        # Layer 3: Deep analysis only for ROI > threshold
-        deep_candidates = [
-            pa for pa in product_analyses
-            if self._quick_roi(pa, cost_per_unit) >= config.ROI_LAYER3_THRESHOLD
-        ]
-        if deep_candidates:
-            await self._layer3.analyze_all(deep_candidates)
+        # Layer 3: skipped (eBay active count lookup too slow in production)
 
         # Platform calculations for each product
         for pa in product_analyses:
