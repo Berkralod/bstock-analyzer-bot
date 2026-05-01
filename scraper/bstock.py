@@ -96,7 +96,7 @@ class BStockScraper:
         headers = {**self._auth_headers(), "Accept": "application/json"}
         result: dict = {}
 
-        # Step 1: Listing metadata (shipping cost)
+        # Step 1: Listing metadata + individual items via internal lotId
         try:
             r = await client.get(
                 f"{LISTING_BASE}/v1/listings/{uid}",
@@ -108,8 +108,17 @@ class BStockScraper:
                 shipping = ld.get("shipping") or {}
                 flat = shipping.get("flatRateCost")
                 if flat:
-                    # flatRateCost is in cents
                     result["shipping_cost"] = flat / 100
+
+                # listing.lotId is different from the URL UUID — it's the key for the items endpoint
+                internal_lot_id = ld.get("lotId")
+                if internal_lot_id:
+                    ri = await client.get(
+                        f"{LISTING_BASE}/v1/lots/{internal_lot_id}/items",
+                        headers=headers, timeout=12.0,
+                    )
+                    if ri.status_code == 200:
+                        result["_lot_items"] = ri.json()
         except Exception:
             pass
 
@@ -381,13 +390,11 @@ class BStockScraper:
                 if not product_name or len(product_name) < 5:
                     product_name = title_raw
 
-                # Try ingestion API items first
-                ingestion_items = (
-                    ingestion.get("items") or ingestion.get("products")
-                    or ingestion.get("lots") or ingestion.get("manifest") or []
-                )
-                for item in ingestion_items:
-                    p = self._item_to_product(item)
+                # Parse real products from listing/lots/{lotId}/items
+                lot_items_data = data.get("_lot_items") or {}
+                lot_condition = normalize_condition(condition_text)
+                for item in (lot_items_data.get("items") or []):
+                    p = self._parse_lot_item(item, lot_condition)
                     if p:
                         products.append(p)
 
@@ -401,7 +408,7 @@ class BStockScraper:
 
                     products.append(Product(
                         name=product_name,
-                        condition=normalize_condition(condition_text),
+                        condition=lot_condition,
                         quantity=unit_count or 1,
                         listed_msrp=per_unit_msrp,
                     ))
@@ -483,6 +490,40 @@ class BStockScraper:
             quantity=qty,
             listed_msrp=clean_price(str(msrp_raw)),
         )
+
+    def _parse_lot_item(self, item: dict, lot_condition) -> Product | None:
+        """Parse an item from listing.bstock.com/v1/lots/{id}/items response."""
+        if not isinstance(item, dict):
+            return None
+        attrs = item.get("attributes") or {}
+        custom = item.get("customAttributes") or {}
+        item_sub = attrs.get("item") or {}
+
+        # Build product name: vendor + description
+        vendor = item_sub.get("vendor", "").strip()
+        desc = attrs.get("description", "").strip()
+        if vendor and vendor.lower() not in desc.lower():
+            name = f"{vendor} {desc}".strip()
+        else:
+            name = desc or vendor
+        if not name or len(name) < 3:
+            return None
+
+        # unitRetail and extRetail are in cents
+        unit_retail_cents = attrs.get("unitRetail") or 0
+        ext_retail_cents = attrs.get("extRetail") or unit_retail_cents
+        msrp = unit_retail_cents / 100 if unit_retail_cents else None
+
+        # Derive quantity from ext vs unit retail
+        qty = 1
+        if unit_retail_cents and ext_retail_cents and ext_retail_cents > unit_retail_cents:
+            qty = round(ext_retail_cents / unit_retail_cents)
+
+        # Per-item condition may live in attributes; fallback to lot-level condition
+        raw_cond = attrs.get("condition") or attrs.get("grade") or custom.get("condition") or ""
+        condition = normalize_condition(raw_cond) if raw_cond else lot_condition
+
+        return Product(name=name, condition=condition, quantity=qty, listed_msrp=msrp)
 
     def _parse_structured(self, soup: BeautifulSoup, lot: Lot) -> list:
         products = []
