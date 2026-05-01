@@ -303,6 +303,7 @@ async def cmd_debug(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                                     a0 = auctions[0]
                                     auction_id = a0.get("_id")
                                     lines.append(f"  auction _id: {auction_id}")
+                                    lines.append(f"  winningBidAmount: {a0.get('winningBidAmount')} | startPrice: {a0.get('startPrice')} | nextMinBidAmount: {a0.get('nextMinBidAmount')}")
                                     lines.append(f"  keys: {list(a0.keys())}")
                                     lines.append(f"  full: {str(a0)[:400]}")
                         except Exception as e:

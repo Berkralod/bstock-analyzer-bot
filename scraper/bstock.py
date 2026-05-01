@@ -320,7 +320,12 @@ class BStockScraper:
             lot.lot_id = lot.lot_id or listing.get("prettyId") or listing.get("formattedPrettyId")
 
             # Current bid from auction (all B-Stock API monetary fields are in cents)
-            win_bid = auction.get("winningBidAmount") or auction.get("currentBidAmount")
+            win_bid = (
+                auction.get("winningBidAmount")
+                or auction.get("currentBidAmount")
+                or auction.get("startPrice")
+                or auction.get("nextMinBidAmount")
+            )
             if win_bid:
                 lot.current_bid = lot.current_bid or win_bid / 100
 
@@ -333,22 +338,31 @@ class BStockScraper:
                 except Exception:
                     pass
 
-            # Parse auction title: e.g. "Lot (DAL-6693732): 12 Apple Watch Mixed - MSRP $4,489"
+            # Parse auction title, e.g.:
+            # "1 Box of Apple Watches, Headphones, Home Safety & More (DAL-6693732),
+            #  Like New, 12 Units, Ext. Retail $4,489, Dallas, TX, FIXED PRICE SHIPPING"
             title_raw = (auction.get("attributes") or {}).get("title", "") or auction.get("title", "")
             if title_raw:
-                # Clean title: remove the lot-code prefix like "(DAL-6693732): "
-                clean_title = re.sub(r"^\s*\([^)]*\)\s*:\s*", "", title_raw).strip()
-                lot.title = lot.title or clean_title
+                lot.title = lot.title or title_raw
 
-                # Extract unit count from title
-                units_m = re.search(r"\b(\d+)\s+(?:unit|item|pc|piece|watch|phone|tablet|laptop|device)", title_raw, re.IGNORECASE)
-                # Extract total MSRP from title
-                msrp_m = re.search(r"(?:msrp|retail|value)[^\$]*\$\s*([\d,]+)", title_raw, re.IGNORECASE)
+                # Extract unit count
+                units_m = re.search(
+                    r"\b(\d+)\s+(?:unit|item|pc|piece|watch|phone|tablet|laptop|device)",
+                    title_raw, re.IGNORECASE
+                )
+                # Extract total Ext. Retail / MSRP
+                msrp_m = re.search(
+                    r"(?:ext\.?\s*retail|msrp|retail value|total retail)[^\$]*\$\s*([\d,]+)",
+                    title_raw, re.IGNORECASE
+                )
                 if not msrp_m:
-                    msrp_m = re.search(r"\$\s*([\d,]+(?:\.\d+)?)\s*(?:msrp|retail|total)", title_raw, re.IGNORECASE)
-                # Extract condition from title
+                    msrp_m = re.search(
+                        r"\$\s*([\d,]+(?:\.\d+)?)\s*(?:msrp|retail|total)",
+                        title_raw, re.IGNORECASE
+                    )
+                # Extract condition
                 cond_m = re.search(
-                    r"\b(new|open[\s-]?box|refurb\w*|used|salvage|untested|customer return|like new)\b",
+                    r"\b(like[\s-]new|open[\s-]?box|refurb\w*|used|salvage|untested|customer return|new)\b",
                     title_raw, re.IGNORECASE
                 )
 
@@ -356,7 +370,18 @@ class BStockScraper:
                 total_msrp = clean_price(msrp_m.group(1)) if msrp_m else None
                 condition_text = cond_m.group(1) if cond_m else "Unknown"
 
-                # Try to get products from ingestion API response
+                # Extract clean product name: strip lot-code, trailing metadata
+                # "1 Box of PRODUCT (DAL-xxxxxx), condition, N Units, Ext. Retail $X, ..."
+                product_name = title_raw
+                # Remove "N Box(es) of " prefix
+                product_name = re.sub(r"^\d+\s+box(?:es)?\s+of\s+", "", product_name, flags=re.IGNORECASE)
+                # Remove lot code "(DAL-6693732)" and everything after it
+                product_name = re.sub(r"\s*\([A-Z]{2,5}-\d{5,8}\).*$", "", product_name, flags=re.IGNORECASE | re.DOTALL)
+                product_name = product_name.strip().rstrip(",").strip()
+                if not product_name or len(product_name) < 5:
+                    product_name = title_raw
+
+                # Try ingestion API items first
                 ingestion_items = (
                     ingestion.get("items") or ingestion.get("products")
                     or ingestion.get("lots") or ingestion.get("manifest") or []
@@ -366,8 +391,8 @@ class BStockScraper:
                     if p:
                         products.append(p)
 
-                # If ingestion gave nothing, synthesize from title metadata
-                if not products and (unit_count or total_msrp or clean_title):
+                # Fallback: synthesize one product from title metadata
+                if not products:
                     per_unit_msrp = None
                     if total_msrp and unit_count:
                         per_unit_msrp = total_msrp / unit_count
@@ -375,12 +400,11 @@ class BStockScraper:
                         per_unit_msrp = total_msrp
 
                     products.append(Product(
-                        name=clean_title or title_raw,
+                        name=product_name,
                         condition=normalize_condition(condition_text),
                         quantity=unit_count or 1,
                         listed_msrp=per_unit_msrp,
                     ))
-                    lot.product_count = unit_count or 1
 
             return products
 
