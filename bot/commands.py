@@ -461,8 +461,24 @@ async def cmd_testebay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 lines.append(f"BD response: {_r.text[:300]}")
             else:
                 from bs4 import BeautifulSoup as _BS2
-                prices3 = [el.get_text(strip=True) for el in _BS2(_r.text, "lxml").select(".s-item__price")[:5]]
-                lines.append(f"Prices: {prices3}")
+                _soup = _BS2(_r.text, "lxml")
+                prices3 = [el.get_text(strip=True) for el in _soup.select(".s-item__price")[:5]]
+                lines.append(f"Prices (.s-item__price): {prices3}")
+                # Try alternative selectors
+                alt_selectors = [
+                    "span.s-item__price",
+                    "[class*='price']",
+                    ".srp-results .s-item",
+                    "li.s-item",
+                    ".item",
+                ]
+                for sel in alt_selectors:
+                    found = _soup.select(sel)
+                    lines.append(f"  {sel}: {len(found)} elements")
+                # Dump first 800 chars of body to see structure
+                body = _soup.find("body")
+                body_text = str(body)[:800] if body else _r.text[:800]
+                lines.append(f"HTML snippet:\n{body_text}")
     except Exception as e:
         lines.append(f"eBay BrightData ERR: {str(e)[:200]}")
 
