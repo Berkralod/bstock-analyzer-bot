@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict
 from typing import Optional
 from enum import Enum
 
@@ -17,6 +17,8 @@ class Condition(str, Enum):
 
 
 class Product(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
     name: str
     normalized_name: Optional[str] = None
     condition: Condition = Condition.UNKNOWN
