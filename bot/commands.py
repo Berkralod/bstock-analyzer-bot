@@ -1,11 +1,13 @@
 import re
+import httpx
 from telegram import Update
 from telegram.ext import ContextTypes
 import config
-from scraper.bstock import BStockScraper
+from scraper.bstock import BStockScraper, HEADERS, LOGIN_URL, BSTOCK_HOME
 from analyzer.pipeline import AnalysisPipeline
 from bot.formatter import format_report
 from utils.cache import Cache
+from utils.helpers import extract_lot_id
 
 
 BSTOCK_URL_PATTERN = re.compile(r"https?://[^\s]*b-?stock[^\s]*", re.IGNORECASE)
@@ -186,6 +188,86 @@ async def cmd_credentials(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         "Şimdi linki tekrar gönder.",
         parse_mode="Markdown",
     )
+
+
+async def cmd_debug(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Usage: /debug <bstock_url>  — diagnose why scraping fails"""
+    if not _is_allowed(update):
+        return
+
+    text = " ".join(context.args) if context.args else ""
+    url_match = BSTOCK_URL_PATTERN.search(text)
+    if not url_match:
+        await update.message.reply_text("Kullanım: `/debug <bstock_url>`", parse_mode="Markdown")
+        return
+
+    url = url_match.group(0)
+    uid = extract_lot_id(url)
+    email = getattr(config, "BSTOCK_EMAIL", "")
+    password = getattr(config, "BSTOCK_PASSWORD", "")
+
+    msg = await update.message.reply_text("🔬 Debug başlıyor...")
+    lines = [f"🔬 *Debug Raporu*", f"URL: `{url[-40:]}`", f"UID: `{uid}`", f"Email: `{email or 'YOK'}`", ""]
+
+    try:
+        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+            # Step 1: Homepage
+            try:
+                r = await client.get(BSTOCK_HOME, headers=HEADERS)
+                lines.append(f"1\\. Homepage: HTTP {r.status_code}, {len(r.text)} karakter")
+            except Exception as e:
+                lines.append(f"1\\. Homepage: HATA {e}")
+
+            # Step 2: Login
+            login_ok = False
+            if email and password:
+                try:
+                    r = await client.post(
+                        LOGIN_URL,
+                        json={"email": email, "password": password},
+                        headers={**HEADERS, "Content-Type": "application/json"},
+                    )
+                    body_preview = r.text[:200].replace("`", "'")
+                    lines.append(f"2\\. Login API: HTTP {r.status_code}")
+                    lines.append(f"   Yanıt: `{body_preview}`")
+                    login_ok = r.status_code in (200, 201, 302)
+                except Exception as e:
+                    lines.append(f"2\\. Login: HATA {e}")
+            else:
+                lines.append("2\\. Login: email/şifre girilmemiş")
+
+            # Step 3: Fetch lot page
+            try:
+                r = await client.get(url, headers=HEADERS)
+                has_next_data = "__NEXT_DATA__" in r.text
+                has_products = any(k in r.text for k in ["manifest", "products", "items", "\"name\""])
+                lines.append(f"3\\. Lot sayfası: HTTP {r.status_code}, {len(r.text)} karakter")
+                lines.append(f"   \\_\\_NEXT\\_DATA\\_\\_: {'✅' if has_next_data else '❌'}")
+                lines.append(f"   Ürün verisi işareti: {'✅' if has_products else '❌'}")
+            except Exception as e:
+                lines.append(f"3\\. Lot sayfası: HATA {e}")
+
+            # Step 4: Try JSON APIs
+            if uid:
+                api_patterns = [
+                    f"https://bstock.com/api/listings/{uid}",
+                    f"https://bstock.com/api/v1/listings/{uid}",
+                    f"https://bstock.com/api/auctions/{uid}",
+                ]
+                for api_url in api_patterns:
+                    try:
+                        r = await client.get(api_url, headers={**HEADERS, "Accept": "application/json"})
+                        lines.append(f"4\\. API `{api_url[-35:]}`: HTTP {r.status_code}, {len(r.text)} karakter")
+                        if r.status_code == 200:
+                            lines.append(f"   Yanıt: `{r.text[:100].replace('`', chr(39))}`")
+                    except Exception as e:
+                        lines.append(f"4\\. API hata: {str(e)[:80]}")
+
+    except Exception as e:
+        lines.append(f"❌ Genel hata: {e}")
+
+    report = "\n".join(lines)
+    await msg.edit_text(report[:4000], parse_mode="MarkdownV2")
 
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
