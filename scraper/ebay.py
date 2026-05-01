@@ -2,13 +2,23 @@ import re
 import httpx
 import asyncio
 from typing import Dict, Any
+from bs4 import BeautifulSoup
 import config
 from utils.cache import Cache
+from utils.proxy import brightdata_proxies
 
 # eBay Finding API — free, no scraping, <1s per call
 _FINDING_API = "https://svcs.ebay.com/services/search/FindingService/v1"
+_EBAY_SEARCH = "https://www.ebay.com/sch/i.html"
+_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+    ),
+    "Accept-Language": "en-US,en;q=0.9",
+}
 
-_semaphore = asyncio.Semaphore(8)
+_semaphore = asyncio.Semaphore(6)
 
 
 class EbayScraper:
@@ -19,7 +29,7 @@ class EbayScraper:
             return cached
 
         query = f"{product_name} {condition}".strip()
-        result = await self._finding_api(query, sold=True)
+        result = await self._get_prices(query, sold=True)
 
         if result.get("avg"):
             await Cache.set("ebay_sold", cache_key, result, config.CACHE_TTL_EBAY)
@@ -30,17 +40,20 @@ class EbayScraper:
         cached = await Cache.get("ebay_active", cache_key)
         if cached is not None:
             return cached
-        result = await self._finding_api(product_name, sold=False)
+        result = await self._get_prices(product_name, sold=False)
         count = result.get("count", 0)
         await Cache.set("ebay_active", cache_key, count, config.CACHE_TTL_EBAY)
         return count
 
-    async def _finding_api(self, query: str, sold: bool) -> Dict[str, Any]:
+    async def _get_prices(self, query: str, sold: bool) -> Dict[str, Any]:
+        """Try Finding API first, fall back to BrightData scraping."""
         app_id = getattr(config, "EBAY_APP_ID", "")
-        _empty = {"avg": None, "median": None, "min": None, "max": None, "count": 0}
+        if app_id:
+            return await self._finding_api(query, sold, app_id)
+        return await self._scrape_via_brightdata(query, sold)
 
-        if not app_id:
-            return _empty if sold else {"count": 0}
+    async def _finding_api(self, query: str, sold: bool, app_id: str) -> Dict[str, Any]:
+        _empty = {"avg": None, "median": None, "min": None, "max": None, "count": 0}
 
         if sold:
             operation = "findCompletedItems"
@@ -82,6 +95,54 @@ class EbayScraper:
 
         except Exception:
             return _empty if sold else {"count": 0}
+
+    async def _scrape_via_brightdata(self, query: str, sold: bool) -> Dict[str, Any]:
+        """Scrape eBay completed listings via BrightData proxy."""
+        proxies = brightdata_proxies()
+        _empty = {"avg": None, "median": None, "min": None, "max": None, "count": 0}
+        if not proxies:
+            return _empty if sold else {"count": 0}
+
+        params: dict = {"_nkw": query, "_ipg": "60", "_sop": "13"}
+        if sold:
+            params["LH_Complete"] = "1"
+            params["LH_Sold"] = "1"
+
+        try:
+            async with _semaphore:
+                timeout = httpx.Timeout(connect=8.0, read=25.0, write=5.0, pool=3.0)
+                async with httpx.AsyncClient(
+                    proxies=proxies, timeout=timeout, verify=False, follow_redirects=True
+                ) as client:
+                    resp = await client.get(_EBAY_SEARCH, params=params, headers=_HEADERS)
+                    if resp.status_code != 200 or len(resp.text) < 2000:
+                        return _empty if sold else {"count": 0}
+                    html = resp.text
+
+            prices = self._parse_html_prices(html)
+            if sold:
+                return self._compute_stats(prices)
+            return {"count": len(prices)}
+        except Exception:
+            return _empty if sold else {"count": 0}
+
+    def _parse_html_prices(self, html: str) -> list:
+        soup = BeautifulSoup(html, "lxml")
+        prices = []
+        for el in soup.select(".s-item__price"):
+            text = el.get_text(strip=True)
+            parts = re.split(r"\s+to\s+", text, flags=re.IGNORECASE)
+            nums = []
+            for part in parts:
+                cleaned = re.sub(r"[^\d.]", "", part.replace(",", ""))
+                if cleaned:
+                    try:
+                        nums.append(float(cleaned))
+                    except ValueError:
+                        pass
+            if nums:
+                prices.append(sum(nums) / len(nums))
+        return prices
 
     def _parse_completed(self, data: dict) -> Dict[str, Any]:
         _empty = {"avg": None, "median": None, "min": None, "max": None, "count": 0}

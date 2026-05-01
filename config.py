@@ -11,8 +11,11 @@ ALLOWED_USERS: Set[int] = {
     if uid.strip()
 }
 
-# Bright Data
-BRIGHTDATA_API_KEY: str = os.environ["BRIGHTDATA_API_KEY"]
+# Bright Data proxy credentials (from BrightData dashboard → zone → Access parameters)
+BRIGHTDATA_USERNAME: str = os.getenv("BRIGHTDATA_USERNAME", "")  # brd-customer-XXX-zone-YYY
+BRIGHTDATA_PASSWORD: str = os.getenv("BRIGHTDATA_PASSWORD", "")
+# Legacy fallback (old single-key format, likely wrong for proxy auth)
+BRIGHTDATA_API_KEY: str = os.getenv("BRIGHTDATA_API_KEY", "")
 BRIGHTDATA_ZONE: str = os.getenv("BRIGHTDATA_ZONE", "web_unlocker1")
 
 # eBay Finding API (free — get App ID from developer.ebay.com)

@@ -440,11 +440,12 @@ async def cmd_testebay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         lines.append(f"eBay direct ERR: {str(e)[:100]}")
 
     # Test 3: eBay via BrightData
-    if bd_key:
+    from utils.proxy import brightdata_proxies as _bd_proxies
+    bd_proxies = _bd_proxies()
+    if bd_proxies:
         try:
-            proxy_url = f"http://zone-{bd_zone}:{bd_key}@brd.superproxy.io:22225"
             async with httpx.AsyncClient(
-                proxies={"https://": proxy_url, "http://": proxy_url},
+                proxies=bd_proxies,
                 timeout=httpx.Timeout(connect=5.0, read=20.0, write=5.0, pool=3.0),
                 verify=False, follow_redirects=True,
             ) as client:
