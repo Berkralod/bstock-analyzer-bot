@@ -267,37 +267,41 @@ async def cmd_debug(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                         except Exception as e:
                             lines.append(f"Offering ERR: {e}")
 
-                        # Docserv manifest
-                        for du in [
-                            f"https://docserv.bstock.com/v1/lots/{lot_id}/manifest",
-                            f"https://docserv.bstock.com/v1/manifests/{lot_id}",
-                            f"https://docserv.bstock.com/v1/listings/{uid}/manifest",
+                        # BAPI with prettyId and formatted versions
+                        for bu in [
+                            f"https://bapi.bstock.com/v1/manifests/{pretty_id}",
+                            f"https://bapi.bstock.com/v1/manifests/{formatted_id}",
+                            f"https://bapi.bstock.com/v1/lots/{pretty_id}/manifest",
+                            f"https://ingestion.bstock.com/v1/manifests/{pretty_id}",
+                            f"https://ingestion.bstock.com/v1/lots/{pretty_id}",
                         ]:
                             try:
-                                rd = await client.get(du, headers=listing_headers, timeout=7.0)
-                                lines.append(f"[{rd.status_code}] docserv{du.split('v1')[1]} | {rd.text[:100]}")
+                                rb = await client.get(bu, headers=listing_headers, timeout=7.0)
+                                lines.append(f"[{rb.status_code}] {bu.split('//')[1][:50]} | {rb.text[:100]}")
+                                if rb.status_code == 200:
+                                    break
                             except Exception as e:
-                                lines.append(f"docserv ERR: {str(e)[:50]}")
+                                lines.append(f"ERR: {str(e)[:50]}")
+
+                        # Scan lot HTML for manifest/API URLs (inside client)
+                        try:
+                            import re as _re
+                            rh = await client.get(url, headers={**HEADERS, "Authorization": f"Bearer {auth_token}" if auth_token else ""}, timeout=12.0)
+                            html = rh.text
+                            manifest_urls = list(set(
+                                _re.findall(r'https?://[^\s\'"<>]+manifest[^\s\'"<>]{0,30}', html, _re.IGNORECASE)
+                                + _re.findall(r'https?://[^\s\'"<>]+\.csv[^\s\'"<>]{0,10}', html, _re.IGNORECASE)
+                            ))
+                            api_urls = list(set(_re.findall(r'https://[a-z\-]+\.bstock\.com/v\d/[^\s\'"<>]{5,50}', html)))
+                            lines.append(f"HTML manifest URLs: {manifest_urls[:8]}")
+                            lines.append(f"HTML bstock API refs: {api_urls[:10]}")
+                        except Exception as e:
+                            lines.append(f"HTML scan ERR: {str(e)[:80]}")
+
                     else:
                         lines.append(r3.text[:200])
                 except Exception as e:
                     lines.append(f"LISTING ERR: {str(e)[:100]}")
-
-        # Scan lot page HTML for manifest URLs
-        try:
-            rh = await client.get(url, headers=HEADERS, timeout=12.0)
-            html = rh.text
-            import re as _re
-            manifest_urls = _re.findall(r'https?://[^\s\'"<>]+manifest[^\s\'"<>]*', html, _re.IGNORECASE)
-            manifest_urls += _re.findall(r'https?://[^\s\'"<>]+\.csv[^\s\'"<>]*', html, _re.IGNORECASE)
-            manifest_urls += _re.findall(r'/v1/[^\s\'"<>]*manifest[^\s\'"<>]*', html, _re.IGNORECASE)
-            lines.append(f"HTML manifest URLs: {list(set(manifest_urls))[:10]}")
-
-            # Also look for any bstock API calls in HTML/JS
-            api_calls = _re.findall(r'https://[a-z\-]+\.bstock\.com/v\d/[^\s\'"<>]{5,60}', html)
-            lines.append(f"API refs in HTML: {list(set(api_calls))[:15]}")
-        except Exception as e:
-            lines.append(f"HTML scan ERR: {str(e)[:80]}")
 
     except Exception as e:
         lines.append(f"GENEL HATA: {e}")
