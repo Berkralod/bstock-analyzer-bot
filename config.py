@@ -14,10 +14,6 @@ ALLOWED_USERS: Set[int] = {
 # Bright Data
 BRIGHTDATA_API_KEY: str = os.environ["BRIGHTDATA_API_KEY"]
 BRIGHTDATA_ZONE: str = os.getenv("BRIGHTDATA_ZONE", "web_unlocker1")
-BRIGHTDATA_PROXY_URL: str = (
-    f"http://brd-customer-hl_{os.getenv('BRIGHTDATA_CUSTOMER_ID', '')}:"
-    f"{BRIGHTDATA_API_KEY}@brd.superproxy.io:22225"
-)
 
 # Apify
 APIFY_API_TOKEN: str = os.environ["APIFY_API_TOKEN"]

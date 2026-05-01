@@ -1,6 +1,6 @@
 import httpx
 from bs4 import BeautifulSoup
-from typing import Optional
+import re
 import config
 from models.lot import Lot
 from models.product import Product
@@ -8,25 +8,29 @@ from utils.helpers import clean_price, normalize_condition, extract_lot_id
 from utils.haiku import HaikuClient
 
 
-BRIGHTDATA_HEADERS = {
-    "Content-Type": "application/json",
-}
+BRIGHTDATA_API_URL = "https://api.brightdata.com/request"
 
 
 class BStockScraper:
     def __init__(self) -> None:
         self._haiku = HaikuClient()
-        self._proxy = {
-            "http://": config.BRIGHTDATA_PROXY_URL,
-            "https://": config.BRIGHTDATA_PROXY_URL,
-        }
+
+    async def _fetch_url(self, url: str) -> str:
+        """Fetch URL via Bright Data Web Unlocker API."""
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                BRIGHTDATA_API_URL,
+                headers={
+                    "Authorization": f"Bearer {config.BRIGHTDATA_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={"zone": config.BRIGHTDATA_ZONE, "url": url, "format": "raw"},
+            )
+            resp.raise_for_status()
+            return resp.text
 
     async def scrape_lot(self, url: str) -> Lot:
-        async with httpx.AsyncClient(proxies=self._proxy, timeout=30.0, verify=False) as client:
-            resp = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
-            resp.raise_for_status()
-            html = resp.text
-
+        html = await self._fetch_url(url)
         lot = await self._parse_html(url, html)
         lot.compute_totals()
         return lot
@@ -35,11 +39,9 @@ class BStockScraper:
         soup = BeautifulSoup(html, "lxml")
         lot = Lot(url=url, lot_id=extract_lot_id(url))
 
-        # Try structured parse first
         products = self._parse_structured(soup, lot)
 
         if not products:
-            # Fallback: use Haiku AI to parse the HTML
             parsed = await self._haiku.parse_bstock_html(html)
             lot.title = parsed.get("title")
             lot.current_bid = parsed.get("current_bid")
@@ -78,7 +80,6 @@ class BStockScraper:
         premium_el = soup.select_one(".buyers-premium, [data-testid='buyers-premium']")
         if premium_el:
             text = premium_el.get_text()
-            import re
             m = re.search(r"(\d+(?:\.\d+)?)\s*%", text)
             if m:
                 lot.buyers_premium_rate = float(m.group(1)) / 100
