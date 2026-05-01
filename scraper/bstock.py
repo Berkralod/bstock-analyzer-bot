@@ -21,14 +21,25 @@ HEADERS = {
 LOGIN_URL = "https://bstock.com/api/auth/login"
 BSTOCK_HOME = "https://bstock.com"
 
-# B-Stock internal API patterns — React frontend calls these
-API_PATTERNS = [
-    "https://bstock.com/api/listings/{uid}",
-    "https://bstock.com/api/v1/listings/{uid}",
-    "https://bstock.com/api/auctions/{uid}",
-    "https://bstock.com/api/lots/{uid}",
-    "https://bstock.com/api/v1/auctions/{uid}",
-    "https://bstock.com/api/listing-details/{uid}",
+# Real B-Stock microservice URLs (from __NEXT_DATA__ hostMap)
+AUTH_BASE = "https://auth.bstock.com"
+LISTING_BASE = "https://listing.bstock.com"
+AUCTION_BASE = "https://auction.bstock.com"
+
+# FusionAuth login endpoints to try
+AUTH_ENDPOINTS = [
+    f"{AUTH_BASE}/api/login",
+    f"{AUTH_BASE}/login",
+    f"{AUTH_BASE}/oauth2/token",
+]
+
+# Listing API patterns
+LISTING_PATTERNS = [
+    f"{LISTING_BASE}/listings/{{uid}}",
+    f"{LISTING_BASE}/v1/listings/{{uid}}",
+    f"{LISTING_BASE}/listings/{{uid}}/details",
+    f"{AUCTION_BASE}/auctions/{{uid}}",
+    f"{AUCTION_BASE}/v1/auctions/{{uid}}",
 ]
 
 
@@ -52,42 +63,45 @@ class BStockScraper:
         password = getattr(config, "BSTOCK_PASSWORD", "")
         if not email or not password:
             return False
-        try:
-            await client.get(BSTOCK_HOME, headers=HEADERS)
-            resp = await client.post(
-                LOGIN_URL,
-                json={"email": email, "password": password},
-                headers={**HEADERS, "Content-Type": "application/json",
-                         "Referer": "https://bstock.com/login"},
-            )
-            if resp.status_code in (200, 201, 302):
-                self._cookies = dict(client.cookies)
-                # Try to extract JWT/bearer token from response body
-                try:
+
+        # FusionAuth standard login
+        for auth_url in AUTH_ENDPOINTS:
+            try:
+                if "oauth2/token" in auth_url:
+                    payload = {
+                        "grant_type": "password",
+                        "username": email,
+                        "password": password,
+                    }
+                    resp = await client.post(
+                        auth_url,
+                        data=payload,
+                        headers={**HEADERS, "Content-Type": "application/x-www-form-urlencoded"},
+                        timeout=10.0,
+                    )
+                else:
+                    # FusionAuth /api/login format
+                    resp = await client.post(
+                        auth_url,
+                        json={"loginId": email, "password": password},
+                        headers={**HEADERS, "Content-Type": "application/json"},
+                        timeout=10.0,
+                    )
+                if resp.status_code in (200, 201):
                     data = resp.json()
                     token = (
                         data.get("token")
                         or data.get("access_token")
                         or data.get("accessToken")
-                        or (data.get("data") or {}).get("token")
+                        or (data.get("user") or {}).get("token")
                     )
                     if token:
                         self._auth_token = token
-                except Exception:
-                    pass
-                return True
-            # Form-based fallback
-            resp2 = await client.post(
-                "https://bstock.com/login",
-                data={"email": email, "password": password},
-                headers={**HEADERS, "Content-Type": "application/x-www-form-urlencoded"},
-                follow_redirects=True,
-            )
-            if resp2.status_code == 200 and "logout" in resp2.text.lower():
-                self._cookies = dict(client.cookies)
-                return True
-        except Exception:
-            pass
+                    self._cookies = dict(client.cookies)
+                    return True
+            except Exception:
+                continue
+
         return False
 
     def _auth_headers(self) -> dict:
@@ -97,27 +111,22 @@ class BStockScraper:
         return h
 
     async def _try_json_api(self, uid: str, client: httpx.AsyncClient) -> dict | None:
-        """Try B-Stock internal JSON API endpoints."""
-        for pattern in API_PATTERNS:
+        """Try B-Stock microservice listing/auction API endpoints."""
+        for pattern in LISTING_PATTERNS:
             url = pattern.format(uid=uid)
             try:
                 resp = await client.get(
                     url,
                     headers={**self._auth_headers(), "Accept": "application/json"},
-                    timeout=15.0,
+                    timeout=12.0,
                 )
                 if resp.status_code == 200:
                     ct = resp.headers.get("content-type", "")
                     if "json" in ct:
                         return resp.json()
-                    # Sometimes returns JSON with wrong content-type
                     try:
                         data = resp.json()
-                        if isinstance(data, dict) and (
-                            data.get("products") or data.get("items")
-                            or data.get("manifest") or data.get("lots")
-                            or data.get("data")
-                        ):
+                        if isinstance(data, dict):
                             return data
                     except Exception:
                         pass

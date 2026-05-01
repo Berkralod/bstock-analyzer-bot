@@ -249,18 +249,43 @@ async def cmd_debug(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 else:
                     lines.append("NEXT_DATA: bulunamadi")
 
-            # Step 3: Try B-Stock BAPI login
-            if email:
-                try:
-                    r2 = await client.post(
-                        "https://bapi.bstock.com/auth/token",
-                        json={"email": email, "password": getattr(config, "BSTOCK_PASSWORD", "")},
-                        headers={**HEADERS, "Content-Type": "application/json"},
-                        timeout=8.0,
-                    )
-                    lines.append(f"BAPI login: HTTP {r2.status_code}, {r2.text[:150]}")
-                except Exception as e:
-                    lines.append(f"BAPI login hata: {str(e)[:100]}")
+            # Step 3: Try auth.bstock.com login (FusionAuth)
+            pwd = getattr(config, "BSTOCK_PASSWORD", "")
+            if email and pwd:
+                for auth_url, body in [
+                    ("https://auth.bstock.com/api/login", {"loginId": email, "password": pwd}),
+                    ("https://auth.bstock.com/login", {"loginId": email, "password": pwd}),
+                ]:
+                    try:
+                        r2 = await client.post(
+                            auth_url,
+                            json=body,
+                            headers={**HEADERS, "Content-Type": "application/json"},
+                            timeout=8.0,
+                        )
+                        lines.append(f"AUTH {auth_url.split('/')[-1]}: HTTP {r2.status_code} | {r2.text[:120]}")
+                        if r2.status_code == 200:
+                            break
+                    except Exception as e:
+                        lines.append(f"AUTH hata: {str(e)[:80]}")
+
+            # Step 4: Try listing API
+            if uid:
+                for listing_url in [
+                    f"https://listing.bstock.com/listings/{uid}",
+                    f"https://auction.bstock.com/auctions/{uid}",
+                ]:
+                    try:
+                        r3 = await client.get(
+                            listing_url,
+                            headers={**HEADERS, "Accept": "application/json"},
+                            timeout=8.0,
+                        )
+                        lines.append(f"LISTING API: HTTP {r3.status_code} | {r3.text[:120]}")
+                        if r3.status_code == 200:
+                            break
+                    except Exception as e:
+                        lines.append(f"LISTING hata: {str(e)[:80]}")
 
     except Exception as e:
         lines.append(f"GENEL HATA: {e}")
