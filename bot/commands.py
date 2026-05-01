@@ -464,23 +464,25 @@ async def cmd_testebay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 _soup = _BS2(_r.text, "lxml")
                 prices3 = [el.get_text(strip=True) for el in _soup.select(".s-item__price")[:5]]
                 lines.append(f"Prices (.s-item__price): {prices3}")
-                import re as _re
-                # 1. Regex: dollar prices in raw text
-                dollar_prices = _re.findall(r'\$\s*(\d{1,5}(?:\.\d{2})?)', _r.text)
-                lines.append(f"Regex $prices in raw text: {dollar_prices[:10]}")
-                # 2. Look for embedded JSON price data in <script> tags
+                import re as _re, json as _json
+                # Extract currentPrice values from embedded script JSON
                 scripts = _soup.find_all("script")
                 lines.append(f"Script tags: {len(scripts)}")
+                extracted_prices = []
                 for sc in scripts:
                     sc_text = sc.string or ""
-                    if "currentPrice" in sc_text or "sellingStatus" in sc_text or '"price"' in sc_text:
-                        lines.append(f"  FOUND price JSON in script ({len(sc_text)} chars): ...{sc_text[sc_text.find('currentPrice')-20:sc_text.find('currentPrice')+80]}...")
+                    if "currentPrice" in sc_text:
+                        # Show surrounding context for first hit
+                        idx = sc_text.find("currentPrice")
+                        lines.append(f"currentPrice context: {sc_text[idx-5:idx+120]}")
+                        # Extract all currentPrice values
+                        hits = _re.findall(r'"currentPrice"\s*:\s*\{[^}]*"value"\s*:\s*"?([0-9.]+)"?', sc_text)
+                        if not hits:
+                            hits = _re.findall(r'"currentPrice"\s*:\s*([0-9.]+)', sc_text)
+                        lines.append(f"currentPrice values ({len(hits)}): {hits[:10]}")
+                        extracted_prices = [float(h) for h in hits if h]
                         break
-                # 3. Check if __PRELOADED_STATE__ or similar exists
-                for marker in ["__PRELOADED_STATE__", "g_items", "window.searchPageProps", "searchResults"]:
-                    if marker in _r.text:
-                        idx = _r.text.find(marker)
-                        lines.append(f"  FOUND {marker} at {idx}: {_r.text[idx:idx+150]}")
+                lines.append(f"Extracted prices: {extracted_prices[:10]}")
     except Exception as e:
         lines.append(f"eBay BrightData ERR: {type(e).__name__}: {repr(e)[:300]}")
 
