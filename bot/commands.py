@@ -121,7 +121,13 @@ async def _run_analysis(update: Update, url: str) -> None:
             f"📦 {urun_sayisi} ürün bulundu. Pazar fiyatları araştırılıyor... (~60-90 sn)"
         )
 
-        result = await _pipeline.run(lot)
+        import asyncio as _asyncio
+        try:
+            result = await _asyncio.wait_for(_pipeline.run(lot), timeout=180.0)
+        except _asyncio.TimeoutError:
+            _processing.discard(msg_id)
+            await msg.edit_text("⏱ Analiz zaman aşımına uğradı (3 dk). Daha az ürünlü bir lot deneyin veya tekrar gönderin.")
+            return
 
         await Cache.push_history({
             "url": url,

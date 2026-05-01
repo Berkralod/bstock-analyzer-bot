@@ -8,6 +8,9 @@ from utils.cache import Cache
 APIFY_API_BASE = "https://api.apify.com/v2"
 APIFY_ACTOR = "dtrungtin/ebay-items-scraper"
 
+# Limit concurrent Apify actor runs to avoid rate limits and Railway timeouts
+_semaphore = asyncio.Semaphore(4)
+
 
 class EbayScraper:
     async def get_sold_data(self, product_name: str, condition: str = "") -> Dict[str, Any]:
@@ -37,42 +40,45 @@ class EbayScraper:
         run_input = {"search": query, "maxItems": max_items, "sold": sold, "startUrls": []}
         token = config.APIFY_API_TOKEN
         actor_id = APIFY_ACTOR.replace("/", "~")
+        _empty = {"avg": None, "median": None, "min": None, "max": None, "count": 0}
 
         try:
-            async with httpx.AsyncClient(timeout=90.0) as client:
-                # Trigger actor run
-                run_resp = await client.post(
-                    f"{APIFY_API_BASE}/acts/{actor_id}/runs?token={token}",
-                    json=run_input,
-                )
-                run_resp.raise_for_status()
-                run_data = run_resp.json()
-                run_id = run_data["data"]["id"]
-                dataset_id = run_data["data"]["defaultDatasetId"]
-
-                # Wait for run to finish (poll)
-                for _ in range(30):
-                    await asyncio.sleep(3)
-                    status_resp = await client.get(
-                        f"{APIFY_API_BASE}/actor-runs/{run_id}?token={token}"
+            async with _semaphore:
+                async with httpx.AsyncClient(timeout=60.0) as client:
+                    run_resp = await client.post(
+                        f"{APIFY_API_BASE}/acts/{actor_id}/runs?token={token}",
+                        json=run_input,
                     )
-                    status = status_resp.json()["data"]["status"]
-                    if status in ("SUCCEEDED", "FAILED", "ABORTED", "TIMED-OUT"):
-                        break
+                    run_resp.raise_for_status()
+                    run_data = run_resp.json()
+                    run_id = run_data["data"]["id"]
+                    dataset_id = run_data["data"]["defaultDatasetId"]
 
-                if status != "SUCCEEDED":
-                    return {"avg": None, "median": None, "min": None, "max": None, "count": 0}
+                    status = "RUNNING"
+                    for _ in range(25):  # max ~75 seconds
+                        await asyncio.sleep(3)
+                        status_resp = await client.get(
+                            f"{APIFY_API_BASE}/actor-runs/{run_id}?token={token}"
+                        )
+                        status = status_resp.json()["data"]["status"]
+                        if status in ("SUCCEEDED", "FAILED", "ABORTED", "TIMED-OUT"):
+                            break
 
-                # Fetch dataset items
-                items_resp = await client.get(
-                    f"{APIFY_API_BASE}/datasets/{dataset_id}/items?token={token}&limit={max_items}"
-                )
-                items_resp.raise_for_status()
-                items = items_resp.json()
+                    if status != "SUCCEEDED":
+                        return _empty if sold else {"count": 0}
+
+                    items_resp = await client.get(
+                        f"{APIFY_API_BASE}/datasets/{dataset_id}/items?token={token}&limit={max_items}"
+                    )
+                    items_resp.raise_for_status()
+                    items = items_resp.json()
 
             prices = []
             for item in items:
-                price_raw = item.get("price") or item.get("soldPrice") or item.get("priceWithCurrency")
+                price_raw = (
+                    item.get("price") or item.get("soldPrice")
+                    or item.get("priceWithCurrency")
+                )
                 if price_raw:
                     try:
                         import re
@@ -82,15 +88,10 @@ class EbayScraper:
                     except ValueError:
                         pass
 
-            if sold:
-                return self._compute_stats(prices)
-            else:
-                return {"count": len(items)}
+            return self._compute_stats(prices) if sold else {"count": len(items)}
 
         except Exception:
-            if sold:
-                return {"avg": None, "median": None, "min": None, "max": None, "count": 0}
-            return {"count": 0}
+            return _empty if sold else {"count": 0}
 
     def _compute_stats(self, prices: list) -> Dict[str, Any]:
         if not prices:

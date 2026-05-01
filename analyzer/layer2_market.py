@@ -18,7 +18,17 @@ class Layer2Market:
         self._fb = FacebookMPEstimator()
 
     async def analyze_all(self, products: list[Product]) -> list[ProductAnalysis]:
-        return list(await asyncio.gather(*[self._analyze_product(p) for p in products]))
+        async def _safe(p: Product) -> ProductAnalysis:
+            try:
+                return await asyncio.wait_for(self._analyze_product(p), timeout=100.0)
+            except (asyncio.TimeoutError, Exception):
+                return ProductAnalysis(
+                    name=p.normalized_name or p.name,
+                    condition=p.condition.value,
+                    quantity=p.quantity,
+                    listed_msrp=p.listed_msrp,
+                )
+        return list(await asyncio.gather(*[_safe(p) for p in products]))
 
     async def _analyze_product(self, product: Product) -> ProductAnalysis:
         name = product.normalized_name or product.name
