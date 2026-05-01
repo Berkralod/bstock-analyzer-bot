@@ -2,105 +2,113 @@ import re
 import httpx
 import asyncio
 from typing import Dict, Any
-from bs4 import BeautifulSoup
 import config
 from utils.cache import Cache
 
+# eBay Finding API — free, no scraping, <1s per call
+_FINDING_API = "https://svcs.ebay.com/services/search/FindingService/v1"
 
-_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    ),
-    "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
-}
-
-# Limit concurrent eBay requests
-_semaphore = asyncio.Semaphore(6)
-
-
-def _proxies() -> dict | None:
-    key = getattr(config, "BRIGHTDATA_API_KEY", "")
-    zone = getattr(config, "BRIGHTDATA_ZONE", "web_unlocker1")
-    if not key:
-        return None
-    p = f"http://zone-{zone}:{key}@brd.superproxy.io:22225"
-    return {"http://": p, "https://": p}
+_semaphore = asyncio.Semaphore(8)
 
 
 class EbayScraper:
     async def get_sold_data(self, product_name: str, condition: str = "") -> Dict[str, Any]:
-        cache_key = f"{product_name}|{condition}"
+        cache_key = f"ebay|{product_name}|{condition}"
         cached = await Cache.get("ebay_sold", cache_key)
         if cached:
             return cached
 
         query = f"{product_name} {condition}".strip()
-        result = await self._search_ebay(query, sold=True, max_items=60)
+        result = await self._finding_api(query, sold=True)
 
-        await Cache.set("ebay_sold", cache_key, result, config.CACHE_TTL_EBAY)
+        if result.get("avg"):
+            await Cache.set("ebay_sold", cache_key, result, config.CACHE_TTL_EBAY)
         return result
 
     async def get_active_count(self, product_name: str) -> int:
-        cache_key = f"active|{product_name}"
+        cache_key = f"ebay_active|{product_name}"
         cached = await Cache.get("ebay_active", cache_key)
         if cached is not None:
             return cached
-
-        result = await self._search_ebay(product_name, sold=False, max_items=20)
+        result = await self._finding_api(product_name, sold=False)
         count = result.get("count", 0)
         await Cache.set("ebay_active", cache_key, count, config.CACHE_TTL_EBAY)
         return count
 
-    async def _search_ebay(self, query: str, sold: bool, max_items: int) -> Dict[str, Any]:
-        params: dict = {
-            "_nkw": query,
-            "_ipg": str(min(max_items, 60)),
-            "_sop": "13",
-        }
-        if sold:
-            params["LH_Complete"] = "1"
-            params["LH_Sold"] = "1"
-
+    async def _finding_api(self, query: str, sold: bool) -> Dict[str, Any]:
+        app_id = getattr(config, "EBAY_APP_ID", "")
         _empty = {"avg": None, "median": None, "min": None, "max": None, "count": 0}
-        url = "https://www.ebay.com/sch/i.html"
+
+        if not app_id:
+            return _empty if sold else {"count": 0}
+
+        if sold:
+            operation = "findCompletedItems"
+            filters = {
+                "itemFilter(0).name": "SoldItemsOnly",
+                "itemFilter(0).value": "true",
+            }
+        else:
+            operation = "findItemsByKeywords"
+            filters = {}
+
+        params = {
+            "OPERATION-NAME": operation,
+            "SERVICE-VERSION": "1.0.0",
+            "SECURITY-APPNAME": app_id,
+            "RESPONSE-DATA-FORMAT": "JSON",
+            "keywords": query,
+            "sortOrder": "EndTimeSoonest",
+            "paginationInput.entriesPerPage": "40",
+            **filters,
+        }
 
         try:
             async with _semaphore:
-                async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-                    resp = await client.get(url, params=params, headers=_HEADERS)
-                    if resp.status_code != 200 or len(resp.text) < 2000:
-                        return _empty if sold else {"count": 0}
-                    html = resp.text
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    resp = await client.get(_FINDING_API, params=params)
+                    resp.raise_for_status()
+                    data = resp.json()
 
-            prices = self._parse_prices(html)
             if sold:
-                return self._compute_stats(prices)
-            return {"count": len(prices)}
+                return self._parse_completed(data)
+            else:
+                total = (
+                    data.get("findItemsByKeywordsResponse", [{}])[0]
+                    .get("paginationOutput", [{}])[0]
+                    .get("totalEntries", [0])[0]
+                )
+                return {"count": int(total)}
 
         except Exception:
             return _empty if sold else {"count": 0}
 
-    def _parse_prices(self, html: str) -> list:
-        soup = BeautifulSoup(html, "lxml")
+    def _parse_completed(self, data: dict) -> Dict[str, Any]:
+        _empty = {"avg": None, "median": None, "min": None, "max": None, "count": 0}
+        try:
+            items = (
+                data.get("findCompletedItemsResponse", [{}])[0]
+                .get("searchResult", [{}])[0]
+                .get("item", [])
+            )
+        except Exception:
+            return _empty
+
         prices = []
-        for el in soup.select(".s-item__price"):
-            text = el.get_text(strip=True)
-            # Handle "X to Y" price ranges — take the midpoint
-            parts = re.split(r"\s+to\s+", text, flags=re.IGNORECASE)
-            nums = []
-            for part in parts:
-                cleaned = re.sub(r"[^\d.]", "", part.replace(",", ""))
-                if cleaned:
-                    try:
-                        nums.append(float(cleaned))
-                    except ValueError:
-                        pass
-            if nums:
-                prices.append(sum(nums) / len(nums))
-        return prices
+        for item in items:
+            try:
+                price_str = (
+                    item.get("sellingStatus", [{}])[0]
+                    .get("currentPrice", [{}])[0]
+                    .get("__value__", "")
+                )
+                price = float(price_str)
+                if price > 0:
+                    prices.append(price)
+            except Exception:
+                continue
+
+        return self._compute_stats(prices)
 
     def _compute_stats(self, prices: list) -> Dict[str, Any]:
         if not prices:

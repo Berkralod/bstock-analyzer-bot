@@ -15,9 +15,8 @@ ALLOWED_USERS: Set[int] = {
 BRIGHTDATA_API_KEY: str = os.environ["BRIGHTDATA_API_KEY"]
 BRIGHTDATA_ZONE: str = os.getenv("BRIGHTDATA_ZONE", "web_unlocker1")
 
-# Apify
-APIFY_API_TOKEN: str = os.environ["APIFY_API_TOKEN"]
-APIFY_EBAY_ACTOR: str = "dtrungtin/ebay-items-scraper"
+# eBay Finding API (free — get App ID from developer.ebay.com)
+EBAY_APP_ID: str = os.getenv("EBAY_APP_ID", "")
 
 # Anthropic / Claude Haiku
 ANTHROPIC_API_KEY: str = os.environ["ANTHROPIC_API_KEY"]

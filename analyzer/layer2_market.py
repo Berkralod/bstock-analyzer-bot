@@ -1,8 +1,7 @@
 import asyncio
-from models.product import Product, Condition
+from models.product import Product
 from models.analysis import ProductAnalysis
 from scraper.ebay import EbayScraper
-from analyzer.condition import get_multiplier
 
 
 class Layer2Market:
@@ -17,23 +16,11 @@ class Layer2Market:
         name = product.normalized_name or product.name
         condition_str = product.condition.value
 
-        # Try live eBay data with aggressive timeout
-        ebay_data: dict = {}
-        try:
-            ebay_data = await asyncio.wait_for(
-                self._ebay.get_sold_data(name, condition_str), timeout=8.0
-            )
-        except Exception:
-            pass
-
+        # eBay Finding API — real sold prices, no scraping
+        ebay_data = await self._ebay.get_sold_data(name, condition_str)
         ebay_avg = ebay_data.get("avg")
 
-        # Fallback: estimate from MSRP × condition multiplier if eBay fails
-        if ebay_avg is None and product.listed_msrp:
-            mult = get_multiplier(product.condition)
-            # eBay sold prices are typically ~90% of condition-adjusted MSRP
-            ebay_avg = round(product.listed_msrp * mult * 0.90, 2)
-
+        # Amazon/FB estimated from eBay (real market anchor, not MSRP)
         amazon_new = round(ebay_avg * 1.15, 2) if ebay_avg else None
         amazon_used = round(ebay_avg * 0.80, 2) if ebay_avg else None
         fb_price = round(ebay_avg * 1.18, 2) if ebay_avg else None
