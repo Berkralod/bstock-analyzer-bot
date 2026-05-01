@@ -250,25 +250,39 @@ async def cmd_debug(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                         lines.append(f"status: {listing_data.get('status')}")
                         lines.append(f"docs: {[(d.get('docType'), d.get('url','')[-30:]) for d in listing_data.get('documents', [])]}")
 
-                        # Try offering / lot APIs with lotId
-                        if lot_id:
-                            for lot_url in [
-                                f"https://offering.bstock.com/v1/lots/{lot_id}",
-                                f"https://offering.bstock.com/lots/{lot_id}",
-                                f"https://offering.bstock.com/v1/lots/{lot_id}/items",
-                                f"https://offering.bstock.com/v1/lots/{lot_id}/manifest",
-                                f"https://auction.bstock.com/v1/lots/{lot_id}",
-                                f"https://bapi.bstock.com/v1/lots/{lot_id}",
-                            ]:
-                                try:
-                                    rl = await client.get(lot_url, headers=listing_headers, timeout=8.0)
-                                    lines.append(f"[{rl.status_code}] {lot_url.split('com')[1]} | {rl.text[:150]}")
-                                    if rl.status_code == 200:
-                                        rj = rl.json()
-                                        lines.append(f"  keys: {list(rj.keys()) if isinstance(rj, dict) else type(rj).__name__}")
-                                        break
-                                except Exception as e:
-                                    lines.append(f"ERR: {str(e)[:60]}")
+                        # Show all metadata
+                        for i, m in enumerate(listing_data.get("metadata", [])):
+                            lines.append(f"meta[{i}]: {str(m)[:200]}")
+
+                        # Try listing sub-paths with listingId (uid)
+                        for lot_url in [
+                            f"https://listing.bstock.com/v1/listings/{uid}/items",
+                            f"https://listing.bstock.com/v1/listings/{uid}/manifest",
+                            f"https://listing.bstock.com/v1/listings/{uid}/products",
+                        ]:
+                            try:
+                                rl = await client.get(lot_url, headers=listing_headers, timeout=8.0)
+                                lines.append(f"[{rl.status_code}] {lot_url.split('com')[1]} | {rl.text[:150]}")
+                            except Exception as e:
+                                lines.append(f"ERR: {str(e)[:60]}")
+
+                        # Try offering service with listing UUID and lotId
+                        for lot_url in [
+                            f"https://offering.bstock.com/v1/offerings/{uid}",
+                            f"https://offering.bstock.com/v1/offerings/{lot_id}",
+                            f"https://offering.bstock.com/v1/offerings/{uid}/items",
+                            f"https://bridge.bstock.com/v1/listings/{uid}",
+                            f"https://ingestion.bstock.com/v1/lots/{lot_id}",
+                            f"https://ingestion.bstock.com/v1/lots/{lot_id}/items",
+                        ]:
+                            try:
+                                rl = await client.get(lot_url, headers=listing_headers, timeout=8.0)
+                                lines.append(f"[{rl.status_code}] {lot_url.split('com')[1]} | {rl.text[:150]}")
+                                if rl.status_code == 200:
+                                    rj = rl.json()
+                                    lines.append(f"  keys: {list(rj.keys()) if isinstance(rj, dict) else 'list'}")
+                            except Exception as e:
+                                lines.append(f"ERR: {str(e)[:60]}")
                     else:
                         lines.append(r3.text[:200])
                 except Exception as e:
