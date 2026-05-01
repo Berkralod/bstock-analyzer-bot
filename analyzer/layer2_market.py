@@ -1,49 +1,35 @@
 import asyncio
-from typing import Dict, Any
 from models.product import Product
 from models.analysis import ProductAnalysis
 from scraper.ebay import EbayScraper
-from scraper.amazon import AmazonScraper
-from scraper.google_shopping import GoogleShoppingScraper
-from scraper.walmart import WalmartScraper
-from scraper.facebook_mp import FacebookMPEstimator
 
 
 class Layer2Market:
     def __init__(self) -> None:
         self._ebay = EbayScraper()
-        self._amazon = AmazonScraper()
-        self._google = GoogleShoppingScraper()
-        self._walmart = WalmartScraper()
-        self._fb = FacebookMPEstimator()
 
     async def analyze_all(self, products: list[Product]) -> list[ProductAnalysis]:
-        async def _safe(p: Product) -> ProductAnalysis:
-            try:
-                return await asyncio.wait_for(self._analyze_product(p), timeout=35.0)
-            except (asyncio.TimeoutError, Exception):
-                return ProductAnalysis(
-                    name=p.normalized_name or p.name,
-                    condition=p.condition.value,
-                    quantity=p.quantity,
-                    listed_msrp=p.listed_msrp,
-                )
-        return list(await asyncio.gather(*[_safe(p) for p in products]))
+        # Run all eBay lookups in parallel; each has its own internal semaphore
+        tasks = [self._analyze_product(p) for p in products]
+        return list(await asyncio.gather(*tasks, return_exceptions=False))
 
     async def _analyze_product(self, product: Product) -> ProductAnalysis:
         name = product.normalized_name or product.name
         condition_str = product.condition.value
 
-        ebay_task = self._ebay.get_sold_data(name, condition_str)
-        amazon_task = self._amazon.get_prices(name)
-        google_task = self._google.get_price(name)
-        walmart_task = self._walmart.get_price(name)
+        try:
+            ebay_data = await asyncio.wait_for(
+                self._ebay.get_sold_data(name, condition_str), timeout=25.0
+            )
+        except Exception:
+            ebay_data = {}
 
-        ebay_data, amazon_data, google_price, walmart_price = await asyncio.gather(
-            ebay_task, amazon_task, google_task, walmart_task
-        )
+        ebay_avg = ebay_data.get("avg")
 
-        fb_price = await self._fb.estimate_price(name, condition_str, ebay_data.get("avg"))
+        # Estimate Amazon/FB from eBay via multiplier (avoids slow external scrapers)
+        amazon_new = round(ebay_avg * 1.15, 2) if ebay_avg else None
+        amazon_used = round(ebay_avg * 0.80, 2) if ebay_avg else None
+        fb_price = round(ebay_avg * 1.18, 2) if ebay_avg else None
 
         return ProductAnalysis(
             name=name,
@@ -52,13 +38,13 @@ class Layer2Market:
             listed_msrp=product.listed_msrp,
             real_msrp=product.real_msrp,
             fake_msrp=product.fake_msrp,
-            ebay_sold_avg=ebay_data.get("avg"),
+            ebay_sold_avg=ebay_avg,
             ebay_sold_median=ebay_data.get("median"),
             ebay_sold_min=ebay_data.get("min"),
             ebay_sold_max=ebay_data.get("max"),
-            amazon_new=amazon_data.get("new_price"),
-            amazon_used=amazon_data.get("used_price"),
-            google_shopping_price=google_price,
-            walmart_price=walmart_price,
+            amazon_new=amazon_new,
+            amazon_used=amazon_used,
+            google_shopping_price=None,
+            walmart_price=None,
             fb_estimated_price=fb_price,
         )

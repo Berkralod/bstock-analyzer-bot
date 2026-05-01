@@ -65,22 +65,30 @@ class EbayScraper:
             params["LH_Sold"] = "1"
 
         _empty = {"avg": None, "median": None, "min": None, "max": None, "count": 0}
+        url = "https://www.ebay.com/sch/i.html"
+
+        async def _fetch(proxies=None) -> str | None:
+            try:
+                kwargs = {"timeout": 15.0, "follow_redirects": True}
+                if proxies:
+                    kwargs["proxies"] = proxies
+                    kwargs["verify"] = False
+                async with httpx.AsyncClient(**kwargs) as client:
+                    resp = await client.get(url, params=params, headers=_HEADERS)
+                    if resp.status_code == 200 and len(resp.text) > 2000:
+                        return resp.text
+            except Exception:
+                pass
+            return None
 
         try:
             async with _semaphore:
-                proxies = _proxies()
-                async with httpx.AsyncClient(
-                    proxies=proxies,
-                    timeout=20.0,
-                    follow_redirects=True,
-                    verify=False,
-                ) as client:
-                    resp = await client.get(
-                        "https://www.ebay.com/sch/i.html",
-                        params=params,
-                        headers=_HEADERS,
-                    )
-                    html = resp.text
+                # Try direct first (fast), fallback to BrightData proxy
+                html = await _fetch()
+                if not html:
+                    html = await _fetch(proxies=_proxies())
+                if not html:
+                    return _empty if sold else {"count": 0}
 
             prices = self._parse_prices(html)
             if sold:
