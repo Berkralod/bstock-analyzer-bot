@@ -464,21 +464,17 @@ async def cmd_testebay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 _soup = _BS2(_r.text, "lxml")
                 prices3 = [el.get_text(strip=True) for el in _soup.select(".s-item__price")[:5]]
                 lines.append(f"Prices (.s-item__price): {prices3}")
-                # Try alternative selectors
-                alt_selectors = [
-                    "span.s-item__price",
-                    "[class*='price']",
-                    ".srp-results .s-item",
-                    "li.s-item",
-                    ".item",
-                ]
-                for sel in alt_selectors:
+                # Show class names of [class*='price'] elements
+                price_els = _soup.select("[class*='price']")
+                lines.append(f"[class*='price']: {len(price_els)} elements")
+                for el in price_els[:5]:
+                    lines.append(f"  tag={el.name} class={el.get('class')} text={el.get_text(strip=True)[:60]}")
+                # Try s-item containers
+                for sel in ["[class*='s-item']", "[class*='srp-item']", "[class*='item--large']"]:
                     found = _soup.select(sel)
                     lines.append(f"  {sel}: {len(found)} elements")
-                # Dump first 800 chars of body to see structure
-                body = _soup.find("body")
-                body_text = str(body)[:800] if body else _r.text[:800]
-                lines.append(f"HTML snippet:\n{body_text}")
+                    if found:
+                        lines.append(f"    first class: {found[0].get('class')}")
     except Exception as e:
         lines.append(f"eBay BrightData ERR: {type(e).__name__}: {repr(e)[:300]}")
 
