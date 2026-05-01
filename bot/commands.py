@@ -257,48 +257,42 @@ async def cmd_debug(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 else:
                     lines.append("NEXT_DATA: bulunamadi")
 
-            # Step 3: Try auth.bstock.com login (FusionAuth)
+            # Step 3: FusionAuth login with applicationId
             pwd = getattr(config, "BSTOCK_PASSWORD", "")
+            fa_app_id = "1b094c5f-c8a6-416c-8c62-4dc77ca88ce9"
+            auth_token = None
             if email and pwd:
-                for auth_url, body in [
-                    ("https://auth.bstock.com/api/login", {"loginId": email, "password": pwd}),
-                    ("https://auth.bstock.com/login", {"loginId": email, "password": pwd}),
-                ]:
-                    try:
-                        r2 = await client.post(
-                            auth_url,
-                            json=body,
-                            headers={**HEADERS, "Content-Type": "application/json"},
-                            timeout=8.0,
-                        )
-                        lines.append(f"AUTH {auth_url.split('/')[-1]}: HTTP {r2.status_code} | {r2.text[:120]}")
-                        if r2.status_code == 200:
-                            break
-                    except Exception as e:
-                        lines.append(f"AUTH hata: {str(e)[:80]}")
+                try:
+                    r2 = await client.post(
+                        "https://auth.bstock.com/api/login",
+                        json={"loginId": email, "password": pwd, "applicationId": fa_app_id},
+                        headers={**HEADERS, "Content-Type": "application/json"},
+                        timeout=10.0,
+                    )
+                    lines.append(f"AUTH login: HTTP {r2.status_code} | {r2.text[:200]}")
+                    if r2.status_code in (200, 201):
+                        auth_token = r2.json().get("token")
+                        lines.append(f"TOKEN: {str(auth_token)[:60]}")
+                except Exception as e:
+                    lines.append(f"AUTH hata: {str(e)[:100]}")
 
-            # Step 4: Try listing API paths
+            # Step 4: Try listing API with auth token
             if uid:
+                listing_headers = {**HEADERS, "Accept": "application/json"}
+                if auth_token:
+                    listing_headers["Authorization"] = f"Bearer {auth_token}"
                 for listing_url in [
                     f"https://listing.bstock.com/v1/listings/{uid}",
-                    f"https://listing.bstock.com/listing/{uid}",
-                    f"https://listing.bstock.com/listings/details/{uid}",
+                    f"https://listing.bstock.com/v1/listings/{uid}/details",
                     f"https://auction.bstock.com/v1/auctions/{uid}",
-                    f"https://auction.bstock.com/auction/{uid}",
-                    f"https://bapi.bstock.com/v1/listings/{uid}",
-                    f"https://bapi.bstock.com/v1/auctions/{uid}",
                 ]:
                     try:
-                        r3 = await client.get(
-                            listing_url,
-                            headers={**HEADERS, "Accept": "application/json"},
-                            timeout=8.0,
-                        )
-                        lines.append(f"[{r3.status_code}] {listing_url.replace('https://','')[:50]} | {r3.text[:80]}")
+                        r3 = await client.get(listing_url, headers=listing_headers, timeout=8.0)
+                        lines.append(f"[{r3.status_code}] {listing_url.split('com')[1]} | {r3.text[:150]}")
                         if r3.status_code == 200:
                             break
                     except Exception as e:
-                        lines.append(f"ERR {listing_url[-30:]}: {str(e)[:60]}")
+                        lines.append(f"ERR: {str(e)[:80]}")
 
     except Exception as e:
         lines.append(f"GENEL HATA: {e}")

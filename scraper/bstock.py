@@ -25,20 +25,11 @@ BSTOCK_HOME = "https://bstock.com"
 AUTH_BASE = "https://auth.bstock.com"
 LISTING_BASE = "https://listing.bstock.com"
 AUCTION_BASE = "https://auction.bstock.com"
+FA_APPLICATION_ID = "1b094c5f-c8a6-416c-8c62-4dc77ca88ce9"
 
-# FusionAuth login endpoints to try
-AUTH_ENDPOINTS = [
-    f"{AUTH_BASE}/api/login",
-    f"{AUTH_BASE}/login",
-    f"{AUTH_BASE}/oauth2/token",
-]
-
-# Listing API patterns
 LISTING_PATTERNS = [
-    f"{LISTING_BASE}/listings/{{uid}}",
     f"{LISTING_BASE}/v1/listings/{{uid}}",
-    f"{LISTING_BASE}/listings/{{uid}}/details",
-    f"{AUCTION_BASE}/auctions/{{uid}}",
+    f"{LISTING_BASE}/v1/listings/{{uid}}/details",
     f"{AUCTION_BASE}/v1/auctions/{{uid}}",
 ]
 
@@ -64,43 +55,27 @@ class BStockScraper:
         if not email or not password:
             return False
 
-        # FusionAuth standard login
-        for auth_url in AUTH_ENDPOINTS:
-            try:
-                if "oauth2/token" in auth_url:
-                    payload = {
-                        "grant_type": "password",
-                        "username": email,
-                        "password": password,
-                    }
-                    resp = await client.post(
-                        auth_url,
-                        data=payload,
-                        headers={**HEADERS, "Content-Type": "application/x-www-form-urlencoded"},
-                        timeout=10.0,
-                    )
-                else:
-                    # FusionAuth /api/login format
-                    resp = await client.post(
-                        auth_url,
-                        json={"loginId": email, "password": password},
-                        headers={**HEADERS, "Content-Type": "application/json"},
-                        timeout=10.0,
-                    )
-                if resp.status_code in (200, 201):
-                    data = resp.json()
-                    token = (
-                        data.get("token")
-                        or data.get("access_token")
-                        or data.get("accessToken")
-                        or (data.get("user") or {}).get("token")
-                    )
-                    if token:
-                        self._auth_token = token
+        # FusionAuth /api/login with applicationId (resolves TenantIdRequired)
+        try:
+            resp = await client.post(
+                f"{AUTH_BASE}/api/login",
+                json={
+                    "loginId": email,
+                    "password": password,
+                    "applicationId": FA_APPLICATION_ID,
+                },
+                headers={**HEADERS, "Content-Type": "application/json"},
+                timeout=12.0,
+            )
+            if resp.status_code in (200, 201):
+                data = resp.json()
+                token = data.get("token") or (data.get("user") or {}).get("token")
+                if token:
+                    self._auth_token = token
                     self._cookies = dict(client.cookies)
                     return True
-            except Exception:
-                continue
+        except Exception:
+            pass
 
         return False
 
