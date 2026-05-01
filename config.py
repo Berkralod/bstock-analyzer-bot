@@ -26,6 +26,10 @@ HAIKU_MODEL: str = "claude-haiku-4-5-20251001"
 # Redis
 REDIS_URL: str = os.environ["REDIS_URL"]
 
+# B-Stock credentials (for authenticated scraping)
+BSTOCK_EMAIL: str = os.getenv("BSTOCK_EMAIL", "")
+BSTOCK_PASSWORD: str = os.getenv("BSTOCK_PASSWORD", "")
+
 # App
 PORT: int = int(os.getenv("PORT", "8000"))
 ENVIRONMENT: str = os.getenv("ENVIRONMENT", "development")

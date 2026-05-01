@@ -15,6 +15,7 @@ _pipeline = AnalysisPipeline()
 
 # Simple rate limiter per user
 _rate_tracker: dict[int, list] = {}
+_processing: set[int] = set()  # message_id deduplication
 import time
 
 
@@ -86,7 +87,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 async def _run_analysis(update: Update, url: str) -> None:
     user_id = update.effective_user.id
+    msg_id = update.message.message_id
+
+    # Deduplicate: Telegram retries webhook if no 200 within 60s
+    if msg_id in _processing:
+        return
+    _processing.add(msg_id)
+
     if not _check_rate_limit(user_id):
+        _processing.discard(msg_id)
         await update.message.reply_text("⏳ Çok hızlı! Dakikada en fazla 5 analiz yapılabilir.")
         return
 
@@ -96,6 +105,16 @@ async def _run_analysis(update: Update, url: str) -> None:
         lot = await _scraper.scrape_lot(url)
 
         urun_sayisi = lot.product_count or len(lot.products)
+
+        if urun_sayisi == 0:
+            _processing.discard(msg_id)
+            await msg.edit_text(
+                "⚠️ Lot'ta ürün bulunamadı.\n\n"
+                "B-Stock bu sayfayı görmek için giriş gerektirebilir.\n"
+                "Çözüm: /credentials komutuyla email ve şifreni gir."
+            )
+            return
+
         await msg.edit_text(
             f"📦 {urun_sayisi} ürün bulundu. Pazar fiyatları araştırılıyor... (~60-90 sn)"
         )
@@ -118,8 +137,10 @@ async def _run_analysis(update: Update, url: str) -> None:
 
     except Exception as e:
         import traceback
-        tb = traceback.format_exc()[-500:]
-        await msg.edit_text(f"❌ Hata: {str(e)[:300]}\n\n```{tb}```", parse_mode="Markdown")
+        tb = traceback.format_exc()[-400:]
+        await msg.edit_text(f"❌ Hata: {str(e)[:200]}\n\n`{tb}`", parse_mode="Markdown")
+    finally:
+        _processing.discard(msg_id)
 
 
 async def cmd_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -142,6 +163,29 @@ async def cmd_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         lines.append(f"{i}\\. `{lot_id}` — {decision} ROI:%{roi:.0f} MaxBid:${max_bid:.0f} \\({ts}\\)")
 
     await update.message.reply_text("\n".join(lines), parse_mode="MarkdownV2")
+
+
+async def cmd_credentials(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Usage: /credentials email@x.com şifre"""
+    if not _is_allowed(update):
+        return
+    if not context.args or len(context.args) < 2:
+        await update.message.reply_text(
+            "Kullanım: `/credentials email@example.com şifren`",
+            parse_mode="Markdown",
+        )
+        return
+    email = context.args[0]
+    password = context.args[1]
+    # Store in Railway via env — for now save to config at runtime
+    import config as cfg
+    cfg.BSTOCK_EMAIL = email
+    cfg.BSTOCK_PASSWORD = password
+    await update.message.reply_text(
+        f"✅ B-Stock girişi ayarlandı: `{email}`\n\n"
+        "Şimdi linki tekrar gönder.",
+        parse_mode="Markdown",
+    )
 
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

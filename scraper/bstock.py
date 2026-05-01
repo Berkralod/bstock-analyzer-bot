@@ -15,48 +15,102 @@ HEADERS = {
     ),
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Referer": "https://bstock.com/",
 }
 
-# Bright Data proxy format using zone password (no customer ID needed with this format)
+LOGIN_URL = "https://bstock.com/api/auth/login"
+BSTOCK_HOME = "https://bstock.com"
+
+
 def _bright_data_proxies() -> dict | None:
     key = getattr(config, "BRIGHTDATA_API_KEY", "")
     zone = getattr(config, "BRIGHTDATA_ZONE", "web_unlocker1")
     if not key:
         return None
-    proxy_url = f"http://zone-{zone}:{key}@brd.superproxy.io:22225"
-    return {"http://": proxy_url, "https://": proxy_url}
+    p = f"http://zone-{zone}:{key}@brd.superproxy.io:22225"
+    return {"http://": p, "https://": p}
 
 
 class BStockScraper:
     def __init__(self) -> None:
         self._haiku = HaikuClient()
+        self._cookies: dict = {}
+
+    async def _login(self, client: httpx.AsyncClient) -> bool:
+        email = getattr(config, "BSTOCK_EMAIL", "")
+        password = getattr(config, "BSTOCK_PASSWORD", "")
+        if not email or not password:
+            return False
+        try:
+            # Get CSRF / session cookie first
+            await client.get(BSTOCK_HOME, headers=HEADERS)
+            resp = await client.post(
+                LOGIN_URL,
+                json={"email": email, "password": password},
+                headers={**HEADERS, "Content-Type": "application/json",
+                         "Referer": "https://bstock.com/login"},
+            )
+            if resp.status_code in (200, 201, 302):
+                self._cookies = dict(client.cookies)
+                return True
+            # Try form-based login as fallback
+            resp2 = await client.post(
+                "https://bstock.com/login",
+                data={"email": email, "password": password},
+                headers={**HEADERS, "Content-Type": "application/x-www-form-urlencoded"},
+                follow_redirects=True,
+            )
+            if resp2.status_code == 200 and "logout" in resp2.text.lower():
+                self._cookies = dict(client.cookies)
+                return True
+        except Exception:
+            pass
+        return False
 
     async def _fetch_url(self, url: str) -> str:
-        # 1. Try direct request first
+        # Try with existing cookies first (already logged in)
         try:
-            async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+            async with httpx.AsyncClient(
+                timeout=25.0, follow_redirects=True, cookies=self._cookies
+            ) as client:
                 resp = await client.get(url, headers=HEADERS)
-                if resp.status_code == 200 and len(resp.text) > 500:
+                if resp.status_code == 200 and len(resp.text) > 1000:
                     return resp.text
         except Exception:
             pass
 
-        # 2. Fallback: Bright Data proxy
+        # Try fresh session with login
+        email = getattr(config, "BSTOCK_EMAIL", "")
+        if email:
+            try:
+                async with httpx.AsyncClient(
+                    timeout=30.0, follow_redirects=True
+                ) as client:
+                    logged_in = await self._login(client)
+                    resp = await client.get(url, headers=HEADERS)
+                    if resp.status_code == 200 and len(resp.text) > 1000:
+                        return resp.text
+            except Exception:
+                pass
+
+        # Fallback: Bright Data proxy
         proxies = _bright_data_proxies()
         if proxies:
             try:
                 async with httpx.AsyncClient(
                     proxies=proxies, timeout=30.0, follow_redirects=True, verify=False
                 ) as client:
+                    if email:
+                        await self._login(client)
                     resp = await client.get(url, headers=HEADERS)
-                    resp.raise_for_status()
-                    return resp.text
+                    if resp.status_code == 200:
+                        return resp.text
             except Exception as e:
-                raise RuntimeError(f"Bright Data proxy error: {e}")
+                raise RuntimeError(f"Bright Data proxy hatası: {e}")
 
-        raise RuntimeError("Could not fetch URL: direct request failed and Bright Data not configured")
+        raise RuntimeError(
+            "Sayfa alınamadı. B-Stock girişi gerekiyor — "
+            "/credentials komutuyla email ve şifreni gir."
+        )
 
     async def scrape_lot(self, url: str) -> Lot:
         html = await self._fetch_url(url)
@@ -70,24 +124,27 @@ class BStockScraper:
 
         products = self._parse_structured(soup, lot)
 
-        if not products:
-            # AI fallback
-            parsed = await self._haiku.parse_bstock_html(html)
-            lot.title = parsed.get("title")
-            lot.current_bid = parsed.get("current_bid")
-            lot.shipping_cost = parsed.get("shipping_cost")
-            if parsed.get("buyers_premium_rate"):
-                lot.buyers_premium_rate = parsed["buyers_premium_rate"]
-            lot.manifest_url = parsed.get("manifest_url")
-            for p_data in parsed.get("products", []):
-                products.append(
-                    Product(
-                        name=p_data.get("name", "Unknown"),
-                        condition=normalize_condition(p_data.get("condition", "")),
-                        quantity=int(p_data.get("quantity", 1)),
-                        listed_msrp=clean_price(str(p_data.get("msrp", "") or "")),
-                    )
-                )
+        # Always try Haiku if structured parse finds <2 products
+        if len(products) < 2:
+            try:
+                parsed = await self._haiku.parse_bstock_html(html)
+                if parsed.get("products"):
+                    lot.title = lot.title or parsed.get("title")
+                    lot.current_bid = lot.current_bid or parsed.get("current_bid")
+                    lot.shipping_cost = lot.shipping_cost or parsed.get("shipping_cost")
+                    if not products:
+                        if parsed.get("buyers_premium_rate"):
+                            lot.buyers_premium_rate = parsed["buyers_premium_rate"]
+                        lot.manifest_url = parsed.get("manifest_url")
+                        for p_data in parsed.get("products", []):
+                            products.append(Product(
+                                name=p_data.get("name", "Unknown"),
+                                condition=normalize_condition(p_data.get("condition", "")),
+                                quantity=int(p_data.get("quantity", 1)),
+                                listed_msrp=clean_price(str(p_data.get("msrp", "") or "")),
+                            ))
+            except Exception:
+                pass
 
         lot.products = products
         return lot
@@ -95,31 +152,27 @@ class BStockScraper:
     def _parse_structured(self, soup: BeautifulSoup, lot: Lot) -> list:
         products = []
 
-        # Title
-        for sel in ["h1.lot-title", ".lot-header h1", "[data-testid='lot-title']", "h1"]:
+        for sel in ["h1.lot-title", ".lot-header h1", "[data-testid='lot-title']",
+                    "h1[class*='title']", ".listing-title", "h1"]:
             el = soup.select_one(sel)
-            if el:
+            if el and len(el.get_text(strip=True)) > 3:
                 lot.title = el.get_text(strip=True)
                 break
 
-        # Current bid
         for sel in [".current-bid", ".bid-amount", "[data-testid='current-bid']",
-                    "[class*='currentBid']", "[class*='current_bid']"]:
+                    "[class*='currentBid']", "[class*='current_bid']", "[class*='bid-price']"]:
             el = soup.select_one(sel)
             if el:
                 lot.current_bid = clean_price(el.get_text())
                 break
 
-        # Shipping
-        for sel in [".shipping-cost", ".freight-cost", "[data-testid='shipping']",
-                    "[class*='shipping']", "[class*='freight']"]:
+        for sel in [".shipping-cost", ".freight-cost", "[class*='shipping']", "[class*='freight']"]:
             el = soup.select_one(sel)
             if el:
                 lot.shipping_cost = clean_price(el.get_text())
                 break
 
-        # Buyer's premium
-        for sel in [".buyers-premium", "[data-testid='buyers-premium']", "[class*='premium']"]:
+        for sel in [".buyers-premium", "[class*='premium']", "[class*='buyer']"]:
             el = soup.select_one(sel)
             if el:
                 m = re.search(r"(\d+(?:\.\d+)?)\s*%", el.get_text())
@@ -127,39 +180,48 @@ class BStockScraper:
                     lot.buyers_premium_rate = float(m.group(1)) / 100
                 break
 
-        # Manifest link
         manifest = soup.select_one("a[href*='manifest'], a[href*='.csv'], a[href*='.pdf']")
         if manifest:
             lot.manifest_url = manifest.get("href")
 
-        # Product rows
-        rows = soup.select(".manifest-row, .product-row, table tbody tr, .item-list-row, [class*='manifest'] tr")
-        for row in rows:
-            cells = row.select("td, .cell")
-            if len(cells) < 2:
+        # Broader row selectors
+        row_selectors = [
+            ".manifest-row", ".product-row", ".item-row",
+            "table tbody tr", "[class*='manifest'] tr",
+            "[class*='item-list'] li", "[class*='lot-item']",
+        ]
+        for sel in row_selectors:
+            rows = soup.select(sel)
+            if not rows:
                 continue
-            name_el = row.select_one(".item-name, .product-name, td:first-child")
-            if not name_el:
-                continue
-            name = name_el.get_text(strip=True)
-            if not name or len(name) < 3:
-                continue
-
-            cond_el = row.select_one(".condition, td:nth-child(2)")
-            condition_text = cond_el.get_text(strip=True) if cond_el else ""
-            qty_el = row.select_one(".quantity, td:nth-child(3)")
-            try:
-                qty = int((qty_el.get_text(strip=True) if qty_el else "1").replace(",", ""))
-            except ValueError:
-                qty = 1
-            msrp_el = row.select_one(".msrp, .retail-price, td:nth-child(4)")
-            msrp = clean_price(msrp_el.get_text() if msrp_el else "")
-
-            products.append(Product(
-                name=name,
-                condition=normalize_condition(condition_text),
-                quantity=qty,
-                listed_msrp=msrp,
-            ))
+            for row in rows:
+                cells = row.select("td, .cell, [class*='col']")
+                if len(cells) < 2:
+                    continue
+                name_el = row.select_one(
+                    ".item-name, .product-name, [class*='name'], td:first-child"
+                )
+                if not name_el:
+                    continue
+                name = name_el.get_text(strip=True)
+                if not name or len(name) < 3:
+                    continue
+                cond_el = row.select_one(".condition, [class*='condition'], td:nth-child(2)")
+                condition_text = cond_el.get_text(strip=True) if cond_el else ""
+                qty_el = row.select_one(".quantity, [class*='qty'], td:nth-child(3)")
+                try:
+                    qty = int((qty_el.get_text(strip=True) if qty_el else "1").replace(",", ""))
+                except ValueError:
+                    qty = 1
+                msrp_el = row.select_one(".msrp, .retail-price, [class*='msrp'], td:nth-child(4)")
+                msrp = clean_price(msrp_el.get_text() if msrp_el else "")
+                products.append(Product(
+                    name=name,
+                    condition=normalize_condition(condition_text),
+                    quantity=qty,
+                    listed_msrp=msrp,
+                ))
+            if products:
+                break
 
         return products
