@@ -250,39 +250,35 @@ async def cmd_debug(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                         lines.append(f"status: {listing_data.get('status')}")
                         lines.append(f"docs: {[(d.get('docType'), d.get('url','')[-30:]) for d in listing_data.get('documents', [])]}")
 
-                        # Show all metadata
-                        for i, m in enumerate(listing_data.get("metadata", [])):
-                            lines.append(f"meta[{i}]: {str(m)[:200]}")
+                        pretty_id = listing_data.get("prettyId")
+                        formatted_id = listing_data.get("formattedPrettyId")
+                        storefront_id = listing_data.get("storefrontId")
+                        lines.append(f"prettyId: {pretty_id}, formattedPrettyId: {formatted_id}")
+                        lines.append(f"storefrontId: {storefront_id}")
 
-                        # Try listing sub-paths with listingId (uid)
-                        for lot_url in [
-                            f"https://listing.bstock.com/v1/listings/{uid}/items",
-                            f"https://listing.bstock.com/v1/listings/{uid}/manifest",
-                            f"https://listing.bstock.com/v1/listings/{uid}/products",
-                        ]:
+                        # Try all promising URL patterns
+                        test_urls = [
+                            f"https://offering.bstock.com/v1/offerings?lotId={lot_id}",
+                            f"https://offering.bstock.com/v1/offerings?listingId={uid}",
+                            f"https://offering.bstock.com/v1/storefronts/{storefront_id}/lots/{lot_id}",
+                            f"https://offering.bstock.com/v1/storefronts/{storefront_id}/lots",
+                            f"https://listing.bstock.com/v1/listings/{uid}/enrichment",
+                            f"https://bapi.bstock.com/v1/listing/{uid}",
+                            f"https://bapi.bstock.com/v1/buy/listings/{uid}",
+                            f"https://search.bstock.com/v1/listings/{uid}",
+                            f"https://search.bstock.com/v1/lots/{lot_id}",
+                        ]
+                        for lu in test_urls:
                             try:
-                                rl = await client.get(lot_url, headers=listing_headers, timeout=8.0)
-                                lines.append(f"[{rl.status_code}] {lot_url.split('com')[1]} | {rl.text[:150]}")
-                            except Exception as e:
-                                lines.append(f"ERR: {str(e)[:60]}")
-
-                        # Try offering service with listing UUID and lotId
-                        for lot_url in [
-                            f"https://offering.bstock.com/v1/offerings/{uid}",
-                            f"https://offering.bstock.com/v1/offerings/{lot_id}",
-                            f"https://offering.bstock.com/v1/offerings/{uid}/items",
-                            f"https://bridge.bstock.com/v1/listings/{uid}",
-                            f"https://ingestion.bstock.com/v1/lots/{lot_id}",
-                            f"https://ingestion.bstock.com/v1/lots/{lot_id}/items",
-                        ]:
-                            try:
-                                rl = await client.get(lot_url, headers=listing_headers, timeout=8.0)
-                                lines.append(f"[{rl.status_code}] {lot_url.split('com')[1]} | {rl.text[:150]}")
+                                rl = await client.get(lu, headers=listing_headers, timeout=7.0)
+                                host = lu.split("//")[1].split("/")[0]
+                                path = "/" + "/".join(lu.split("//")[1].split("/")[1:])
+                                lines.append(f"[{rl.status_code}] {host}{path[:40]} | {rl.text[:100]}")
                                 if rl.status_code == 200:
                                     rj = rl.json()
-                                    lines.append(f"  keys: {list(rj.keys()) if isinstance(rj, dict) else 'list'}")
+                                    lines.append(f"  200 keys: {list(rj.keys()) if isinstance(rj, dict) else type(rj).__name__}")
                             except Exception as e:
-                                lines.append(f"ERR: {str(e)[:60]}")
+                                lines.append(f"ERR {lu[-40:]}: {str(e)[:50]}")
                     else:
                         lines.append(r3.text[:200])
                 except Exception as e:
