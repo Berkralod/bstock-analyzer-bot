@@ -289,13 +289,35 @@ async def cmd_debug(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                     lines.append(f"LISTING: HTTP {r3.status_code}, {len(r3.text)} karakter")
                     if r3.status_code == 200:
                         listing_data = r3.json()
+                        lot_id = listing_data.get("lotId")
                         lines.append(f"Top keys: {list(listing_data.keys())}")
-                        for k, v in listing_data.items():
-                            vt = type(v).__name__
-                            vl = f"[{len(v)}]" if isinstance(v, (list, dict)) else f"= {str(v)[:60]}"
-                            lines.append(f"  {k} ({vt}) {vl}")
-                            if isinstance(v, list) and v:
-                                lines.append(f"    item[0]: {str(v[0])[:120]}")
+                        lines.append(f"lotId: {lot_id}")
+
+                        # Show all documents
+                        for i, doc in enumerate(listing_data.get("documents", [])):
+                            lines.append(f"doc[{i}]: {doc}")
+
+                        # Show all metadata
+                        for i, m in enumerate(listing_data.get("metadata", [])):
+                            lines.append(f"meta[{i}]: {str(m)[:120]}")
+
+                        # Try offering / lot APIs with lotId
+                        if lot_id:
+                            for lot_url in [
+                                f"https://offering.bstock.com/v1/lots/{lot_id}",
+                                f"https://offering.bstock.com/lots/{lot_id}",
+                                f"https://offering.bstock.com/v1/lots/{lot_id}/items",
+                                f"https://offering.bstock.com/v1/lots/{lot_id}/manifest",
+                                f"https://auction.bstock.com/v1/lots/{lot_id}",
+                                f"https://bapi.bstock.com/v1/lots/{lot_id}",
+                            ]:
+                                try:
+                                    rl = await client.get(lot_url, headers=listing_headers, timeout=8.0)
+                                    lines.append(f"[{rl.status_code}] {lot_url.split('com')[1]} | {rl.text[:120]}")
+                                    if rl.status_code == 200:
+                                        break
+                                except Exception as e:
+                                    lines.append(f"ERR {lot_url[-40:]}: {str(e)[:60]}")
                     else:
                         lines.append(r3.text[:200])
                 except Exception as e:
