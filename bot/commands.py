@@ -267,36 +267,31 @@ async def cmd_debug(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                         except Exception as e:
                             lines.append(f"Offering ERR: {e}")
 
-                        # BAPI with prettyId and formatted versions
-                        for bu in [
-                            f"https://bapi.bstock.com/v1/manifests/{pretty_id}",
-                            f"https://bapi.bstock.com/v1/manifests/{formatted_id}",
-                            f"https://bapi.bstock.com/v1/lots/{pretty_id}/manifest",
-                            f"https://ingestion.bstock.com/v1/manifests/{pretty_id}",
-                            f"https://ingestion.bstock.com/v1/lots/{pretty_id}",
+                        # Show full shipping and saleMetrics
+                        lines.append(f"shipping: {listing_data.get('shipping')}")
+                        lines.append(f"saleMetrics: {listing_data.get('saleMetrics')}")
+
+                        # Try docserv manifest download paths
+                        for du in [
+                            f"https://docserv.bstock.com/v1/manifests/{uid}/items",
+                            f"https://docserv.bstock.com/v1/manifests/{uid}",
+                            f"https://docserv.bstock.com/v1/manifests/{uid}/download",
+                            f"https://docserv.bstock.com/v1/documents?docType=MANIFEST&listingId={uid}",
+                            f"https://docserv.bstock.com/v1/documents?docType=MANIFEST&lotId={lot_id}",
+                            f"https://ingestion.bstock.com/v1/lot-items?listingId={uid}",
+                            f"https://ingestion.bstock.com/v1/lot-items?lotId={lot_id}",
+                            f"https://bridge.bstock.com/v1/listings/{uid}/manifest",
+                            f"https://bridge.bstock.com/v1/listings/{uid}/items",
                         ]:
                             try:
-                                rb = await client.get(bu, headers=listing_headers, timeout=7.0)
-                                lines.append(f"[{rb.status_code}] {bu.split('//')[1][:50]} | {rb.text[:100]}")
-                                if rb.status_code == 200:
+                                rd = await client.get(du, headers=listing_headers, timeout=7.0)
+                                service = du.split("//")[1].split(".")[0]
+                                path = du.split("com")[1][:45]
+                                lines.append(f"[{rd.status_code}] {service}{path} | {rd.text[:80]}")
+                                if rd.status_code == 200:
                                     break
                             except Exception as e:
                                 lines.append(f"ERR: {str(e)[:50]}")
-
-                        # Scan lot HTML for manifest/API URLs (inside client)
-                        try:
-                            import re as _re
-                            rh = await client.get(url, headers={**HEADERS, "Authorization": f"Bearer {auth_token}" if auth_token else ""}, timeout=12.0)
-                            html = rh.text
-                            manifest_urls = list(set(
-                                _re.findall(r'https?://[^\s\'"<>]+manifest[^\s\'"<>]{0,30}', html, _re.IGNORECASE)
-                                + _re.findall(r'https?://[^\s\'"<>]+\.csv[^\s\'"<>]{0,10}', html, _re.IGNORECASE)
-                            ))
-                            api_urls = list(set(_re.findall(r'https://[a-z\-]+\.bstock\.com/v\d/[^\s\'"<>]{5,50}', html)))
-                            lines.append(f"HTML manifest URLs: {manifest_urls[:8]}")
-                            lines.append(f"HTML bstock API refs: {api_urls[:10]}")
-                        except Exception as e:
-                            lines.append(f"HTML scan ERR: {str(e)[:80]}")
 
                     else:
                         lines.append(r3.text[:200])
