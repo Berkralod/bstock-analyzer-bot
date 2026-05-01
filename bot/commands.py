@@ -244,6 +244,14 @@ async def cmd_debug(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                         token = page_props.get("accessToken")
                         lines.append(f"accessToken: {str(token)[:80]}")
 
+                        pub_env = page_props.get("publicEnvVars", {})
+                        lines.append("--- publicEnvVars ---")
+                        if isinstance(pub_env, dict):
+                            for k, v in pub_env.items():
+                                lines.append(f"{k}: {v}")
+                        else:
+                            lines.append(str(pub_env)[:500])
+
                     except Exception as ex:
                         lines.append(f"JSON parse hata: {ex}")
                 else:
@@ -269,11 +277,16 @@ async def cmd_debug(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                     except Exception as e:
                         lines.append(f"AUTH hata: {str(e)[:80]}")
 
-            # Step 4: Try listing API
+            # Step 4: Try listing API paths
             if uid:
                 for listing_url in [
-                    f"https://listing.bstock.com/listings/{uid}",
-                    f"https://auction.bstock.com/auctions/{uid}",
+                    f"https://listing.bstock.com/v1/listings/{uid}",
+                    f"https://listing.bstock.com/listing/{uid}",
+                    f"https://listing.bstock.com/listings/details/{uid}",
+                    f"https://auction.bstock.com/v1/auctions/{uid}",
+                    f"https://auction.bstock.com/auction/{uid}",
+                    f"https://bapi.bstock.com/v1/listings/{uid}",
+                    f"https://bapi.bstock.com/v1/auctions/{uid}",
                 ]:
                     try:
                         r3 = await client.get(
@@ -281,11 +294,11 @@ async def cmd_debug(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                             headers={**HEADERS, "Accept": "application/json"},
                             timeout=8.0,
                         )
-                        lines.append(f"LISTING API: HTTP {r3.status_code} | {r3.text[:120]}")
+                        lines.append(f"[{r3.status_code}] {listing_url.replace('https://','')[:50]} | {r3.text[:80]}")
                         if r3.status_code == 200:
                             break
                     except Exception as e:
-                        lines.append(f"LISTING hata: {str(e)[:80]}")
+                        lines.append(f"ERR {listing_url[-30:]}: {str(e)[:60]}")
 
     except Exception as e:
         lines.append(f"GENEL HATA: {e}")
