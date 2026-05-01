@@ -446,16 +446,25 @@ async def cmd_testebay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         {"_nkw": query, "LH_Complete": "1", "LH_Sold": "1", "_ipg": "5"}
     )
     try:
-        html3 = await _bd_fetch(bd_url)
-        if html3:
-            from bs4 import BeautifulSoup as _BS2
-            prices3 = [el.get_text(strip=True) for el in _BS2(html3, "lxml").select(".s-item__price")[:5]]
-            lines.append(f"eBay BrightData Direct API: OK, {len(html3)} chars")
-            lines.append(f"Prices: {prices3}")
-        else:
-            lines.append("eBay BrightData Direct API: no response")
+        import config as _cfg2
+        _api_key = getattr(_cfg2, "BRIGHTDATA_API_KEY", "")
+        _zone = getattr(_cfg2, "BRIGHTDATA_ZONE", "web_unlocker1")
+        lines.append(f"BD key (last 8): ...{_api_key[-8:] if _api_key else 'EMPTY'}")
+        async with httpx.AsyncClient(timeout=30.0) as _c:
+            _r = await _c.post(
+                "https://api.brightdata.com/request",
+                headers={"Content-Type": "application/json", "Authorization": f"Bearer {_api_key}"},
+                json={"zone": _zone, "url": bd_url, "format": "raw"},
+            )
+            lines.append(f"eBay BrightData Direct API: HTTP {_r.status_code}, {len(_r.text)} chars")
+            if _r.status_code != 200:
+                lines.append(f"BD response: {_r.text[:300]}")
+            else:
+                from bs4 import BeautifulSoup as _BS2
+                prices3 = [el.get_text(strip=True) for el in _BS2(_r.text, "lxml").select(".s-item__price")[:5]]
+                lines.append(f"Prices: {prices3}")
     except Exception as e:
-        lines.append(f"eBay BrightData ERR: {str(e)[:150]}")
+        lines.append(f"eBay BrightData ERR: {str(e)[:200]}")
 
     await msg.edit_text("\n".join(lines)[:4000])
 
