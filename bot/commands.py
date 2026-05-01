@@ -8,7 +8,7 @@ from bot.formatter import format_report
 from utils.cache import Cache
 
 
-BSTOCK_URL_PATTERN = re.compile(r"https?://[^\s]*b-stock[^\s]*", re.IGNORECASE)
+BSTOCK_URL_PATTERN = re.compile(r"https?://[^\s]*b-?stock[^\s]*", re.IGNORECASE)
 
 _scraper = BStockScraper()
 _pipeline = AnalysisPipeline()
@@ -90,10 +90,16 @@ async def _run_analysis(update: Update, url: str) -> None:
         await update.message.reply_text("⏳ Çok hızlı! Dakikada en fazla 5 analiz yapılabilir.")
         return
 
-    msg = await update.message.reply_text("🔍 Analiz başladı, lütfen bekle (~1-2 dk)...")
+    msg = await update.message.reply_text("🔍 Lot scrape ediliyor...")
 
     try:
         lot = await _scraper.scrape_lot(url)
+
+        urun_sayisi = lot.product_count or len(lot.products)
+        await msg.edit_text(
+            f"📦 {urun_sayisi} ürün bulundu. Pazar fiyatları araştırılıyor... (~60-90 sn)"
+        )
+
         result = await _pipeline.run(lot)
 
         await Cache.push_history({
@@ -111,7 +117,9 @@ async def _run_analysis(update: Update, url: str) -> None:
             await update.message.reply_text(m, parse_mode="MarkdownV2")
 
     except Exception as e:
-        await msg.edit_text(f"❌ Analiz sırasında hata: {str(e)[:200]}")
+        import traceback
+        tb = traceback.format_exc()[-500:]
+        await msg.edit_text(f"❌ Hata: {str(e)[:300]}\n\n```{tb}```", parse_mode="Markdown")
 
 
 async def cmd_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
