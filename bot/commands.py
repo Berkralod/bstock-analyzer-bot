@@ -256,33 +256,48 @@ async def cmd_debug(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                         lines.append(f"prettyId: {pretty_id}, formattedPrettyId: {formatted_id}")
                         lines.append(f"storefrontId: {storefront_id}")
 
-                        # Try all promising URL patterns
-                        test_urls = [
-                            f"https://offering.bstock.com/v1/offerings?lotId={lot_id}",
-                            f"https://offering.bstock.com/v1/offerings?listingId={uid}",
-                            f"https://offering.bstock.com/v1/storefronts/{storefront_id}/lots/{lot_id}",
-                            f"https://offering.bstock.com/v1/storefronts/{storefront_id}/lots",
-                            f"https://listing.bstock.com/v1/listings/{uid}/enrichment",
-                            f"https://bapi.bstock.com/v1/listing/{uid}",
-                            f"https://bapi.bstock.com/v1/buy/listings/{uid}",
-                            f"https://search.bstock.com/v1/listings/{uid}",
-                            f"https://search.bstock.com/v1/lots/{lot_id}",
-                        ]
-                        for lu in test_urls:
+                        # Offering API
+                        try:
+                            ro = await client.get(f"https://offering.bstock.com/v1/offerings?listingId={uid}", headers=listing_headers, timeout=8.0)
+                            od = ro.json()
+                            lines.append(f"Offerings: total={od.get('total')}, count={len(od.get('offerings',[]))}")
+                            if od.get("offerings"):
+                                lines.append(f"Offering[0] keys: {list(od['offerings'][0].keys())}")
+                                lines.append(f"Offering[0]: {str(od['offerings'][0])[:300]}")
+                        except Exception as e:
+                            lines.append(f"Offering ERR: {e}")
+
+                        # Docserv manifest
+                        for du in [
+                            f"https://docserv.bstock.com/v1/lots/{lot_id}/manifest",
+                            f"https://docserv.bstock.com/v1/manifests/{lot_id}",
+                            f"https://docserv.bstock.com/v1/listings/{uid}/manifest",
+                        ]:
                             try:
-                                rl = await client.get(lu, headers=listing_headers, timeout=7.0)
-                                host = lu.split("//")[1].split("/")[0]
-                                path = "/" + "/".join(lu.split("//")[1].split("/")[1:])
-                                lines.append(f"[{rl.status_code}] {host}{path[:40]} | {rl.text[:100]}")
-                                if rl.status_code == 200:
-                                    rj = rl.json()
-                                    lines.append(f"  200 keys: {list(rj.keys()) if isinstance(rj, dict) else type(rj).__name__}")
+                                rd = await client.get(du, headers=listing_headers, timeout=7.0)
+                                lines.append(f"[{rd.status_code}] docserv{du.split('v1')[1]} | {rd.text[:100]}")
                             except Exception as e:
-                                lines.append(f"ERR {lu[-40:]}: {str(e)[:50]}")
+                                lines.append(f"docserv ERR: {str(e)[:50]}")
                     else:
                         lines.append(r3.text[:200])
                 except Exception as e:
                     lines.append(f"LISTING ERR: {str(e)[:100]}")
+
+        # Scan lot page HTML for manifest URLs
+        try:
+            rh = await client.get(url, headers=HEADERS, timeout=12.0)
+            html = rh.text
+            import re as _re
+            manifest_urls = _re.findall(r'https?://[^\s\'"<>]+manifest[^\s\'"<>]*', html, _re.IGNORECASE)
+            manifest_urls += _re.findall(r'https?://[^\s\'"<>]+\.csv[^\s\'"<>]*', html, _re.IGNORECASE)
+            manifest_urls += _re.findall(r'/v1/[^\s\'"<>]*manifest[^\s\'"<>]*', html, _re.IGNORECASE)
+            lines.append(f"HTML manifest URLs: {list(set(manifest_urls))[:10]}")
+
+            # Also look for any bstock API calls in HTML/JS
+            api_calls = _re.findall(r'https://[a-z\-]+\.bstock\.com/v\d/[^\s\'"<>]{5,60}', html)
+            lines.append(f"API refs in HTML: {list(set(api_calls))[:15]}")
+        except Exception as e:
+            lines.append(f"HTML scan ERR: {str(e)[:80]}")
 
     except Exception as e:
         lines.append(f"GENEL HATA: {e}")
