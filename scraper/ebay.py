@@ -1,15 +1,33 @@
+import re
 import httpx
 import asyncio
-from typing import Dict, Any, Optional
+from typing import Dict, Any
+from bs4 import BeautifulSoup
 import config
 from utils.cache import Cache
 
 
-APIFY_API_BASE = "https://api.apify.com/v2"
-APIFY_ACTOR = "dtrungtin/ebay-items-scraper"
+_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+}
 
-# Limit concurrent Apify actor runs to avoid rate limits and Railway timeouts
-_semaphore = asyncio.Semaphore(4)
+# Limit concurrent eBay requests
+_semaphore = asyncio.Semaphore(6)
+
+
+def _proxies() -> dict | None:
+    key = getattr(config, "BRIGHTDATA_API_KEY", "")
+    zone = getattr(config, "BRIGHTDATA_ZONE", "web_unlocker1")
+    if not key:
+        return None
+    p = f"http://zone-{zone}:{key}@brd.superproxy.io:22225"
+    return {"http://": p, "https://": p}
 
 
 class EbayScraper:
@@ -20,7 +38,7 @@ class EbayScraper:
             return cached
 
         query = f"{product_name} {condition}".strip()
-        result = await self._run_actor(query, sold=True, max_items=40)
+        result = await self._search_ebay(query, sold=True, max_items=60)
 
         await Cache.set("ebay_sold", cache_key, result, config.CACHE_TTL_EBAY)
         return result
@@ -31,83 +49,77 @@ class EbayScraper:
         if cached is not None:
             return cached
 
-        result = await self._run_actor(product_name, sold=False, max_items=10)
+        result = await self._search_ebay(product_name, sold=False, max_items=20)
         count = result.get("count", 0)
         await Cache.set("ebay_active", cache_key, count, config.CACHE_TTL_EBAY)
         return count
 
-    async def _run_actor(self, query: str, sold: bool, max_items: int) -> Dict[str, Any]:
-        run_input = {"search": query, "maxItems": max_items, "sold": sold, "startUrls": []}
-        token = config.APIFY_API_TOKEN
-        actor_id = APIFY_ACTOR.replace("/", "~")
+    async def _search_ebay(self, query: str, sold: bool, max_items: int) -> Dict[str, Any]:
+        params: dict = {
+            "_nkw": query,
+            "_ipg": str(min(max_items, 60)),
+            "_sop": "13",
+        }
+        if sold:
+            params["LH_Complete"] = "1"
+            params["LH_Sold"] = "1"
+
         _empty = {"avg": None, "median": None, "min": None, "max": None, "count": 0}
 
         try:
             async with _semaphore:
-                async with httpx.AsyncClient(timeout=60.0) as client:
-                    run_resp = await client.post(
-                        f"{APIFY_API_BASE}/acts/{actor_id}/runs?token={token}",
-                        json=run_input,
+                proxies = _proxies()
+                async with httpx.AsyncClient(
+                    proxies=proxies,
+                    timeout=20.0,
+                    follow_redirects=True,
+                    verify=False,
+                ) as client:
+                    resp = await client.get(
+                        "https://www.ebay.com/sch/i.html",
+                        params=params,
+                        headers=_HEADERS,
                     )
-                    run_resp.raise_for_status()
-                    run_data = run_resp.json()
-                    run_id = run_data["data"]["id"]
-                    dataset_id = run_data["data"]["defaultDatasetId"]
+                    html = resp.text
 
-                    status = "RUNNING"
-                    for _ in range(25):  # max ~75 seconds
-                        await asyncio.sleep(3)
-                        status_resp = await client.get(
-                            f"{APIFY_API_BASE}/actor-runs/{run_id}?token={token}"
-                        )
-                        status = status_resp.json()["data"]["status"]
-                        if status in ("SUCCEEDED", "FAILED", "ABORTED", "TIMED-OUT"):
-                            break
-
-                    if status != "SUCCEEDED":
-                        return _empty if sold else {"count": 0}
-
-                    items_resp = await client.get(
-                        f"{APIFY_API_BASE}/datasets/{dataset_id}/items?token={token}&limit={max_items}"
-                    )
-                    items_resp.raise_for_status()
-                    items = items_resp.json()
-
-            prices = []
-            for item in items:
-                price_raw = (
-                    item.get("price") or item.get("soldPrice")
-                    or item.get("priceWithCurrency")
-                )
-                if price_raw:
-                    try:
-                        import re
-                        cleaned = re.sub(r"[^\d.]", "", str(price_raw).replace(",", ""))
-                        if cleaned:
-                            prices.append(float(cleaned))
-                    except ValueError:
-                        pass
-
-            return self._compute_stats(prices) if sold else {"count": len(items)}
+            prices = self._parse_prices(html)
+            if sold:
+                return self._compute_stats(prices)
+            return {"count": len(prices)}
 
         except Exception:
             return _empty if sold else {"count": 0}
 
+    def _parse_prices(self, html: str) -> list:
+        soup = BeautifulSoup(html, "lxml")
+        prices = []
+        for el in soup.select(".s-item__price"):
+            text = el.get_text(strip=True)
+            # Handle "X to Y" price ranges — take the midpoint
+            parts = re.split(r"\s+to\s+", text, flags=re.IGNORECASE)
+            nums = []
+            for part in parts:
+                cleaned = re.sub(r"[^\d.]", "", part.replace(",", ""))
+                if cleaned:
+                    try:
+                        nums.append(float(cleaned))
+                    except ValueError:
+                        pass
+            if nums:
+                prices.append(sum(nums) / len(nums))
+        return prices
+
     def _compute_stats(self, prices: list) -> Dict[str, Any]:
         if not prices:
             return {"avg": None, "median": None, "min": None, "max": None, "count": 0}
-        prices_sorted = sorted(prices)
-        n = len(prices_sorted)
-        avg = sum(prices_sorted) / n
-        median = (
-            prices_sorted[n // 2]
-            if n % 2 != 0
-            else (prices_sorted[n // 2 - 1] + prices_sorted[n // 2]) / 2
-        )
+        s = sorted(prices)
+        n = len(s)
+        avg = sum(s) / n
+        median = s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2
         return {
             "avg": round(avg, 2),
             "median": round(median, 2),
-            "min": round(prices_sorted[0], 2),
-            "max": round(prices_sorted[-1], 2),
+            "min": round(s[0], 2),
+            "max": round(s[-1], 2),
             "count": n,
         }
