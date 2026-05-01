@@ -450,7 +450,7 @@ async def cmd_testebay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     # Test 3a: BrightData WITHOUT JS render
     try:
-        async with httpx.AsyncClient(timeout=35.0) as _c:
+        async with httpx.AsyncClient(timeout=55.0) as _c:
             _r = await _c.post(
                 "https://api.brightdata.com/request",
                 headers={"Content-Type": "application/json", "Authorization": f"Bearer {_api_key}"},
@@ -464,13 +464,13 @@ async def cmd_testebay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     except Exception as e:
         lines.append(f"BD no-render ERR: {type(e).__name__}: {repr(e)[:200]}")
 
-    # Test 3b: BrightData WITH JS render
+    # Test 3b: BrightData WITH JS render (render must be bool)
     try:
-        async with httpx.AsyncClient(timeout=60.0) as _c:
+        async with httpx.AsyncClient(timeout=90.0) as _c:
             _r2 = await _c.post(
                 "https://api.brightdata.com/request",
                 headers={"Content-Type": "application/json", "Authorization": f"Bearer {_api_key}"},
-                json={"zone": _zone, "url": bd_url, "format": "raw", "render": "html"},
+                json={"zone": _zone, "url": bd_url, "format": "raw", "render": True},
             )
             lines.append(f"BD js-render: HTTP {_r2.status_code}, {len(_r2.text)} chars")
             if _r2.status_code == 200:
