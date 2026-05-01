@@ -261,21 +261,24 @@ async def cmd_debug(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                     try:
                         import json as _json
                         nd_obj = _json.loads(nd)
-                        def _keys(d, depth=0):
-                            if depth > 3 or not isinstance(d, dict):
-                                return []
-                            out = []
-                            for k, v in list(d.items())[:15]:
-                                vtype = type(v).__name__
-                                vlen = f"[{len(v)}]" if isinstance(v, (list, dict)) else ""
-                                out.append("  " * depth + f"`{k}` {vtype}{vlen}")
-                                out.extend(_keys(v, depth + 1))
-                            return out
-                        key_lines = _keys(nd_obj)[:40]
-                        lines.append(f"4\\. \\_\\_NEXT\\_DATA\\_\\_ keys \\({len(nd)} karakter\\):")
-                        lines.extend(key_lines)
+                        page_props = nd_obj.get("props", {}).get("pageProps", {})
+
+                        # Show hostMap values
+                        host_map = page_props.get("hostMap", {})
+                        lines.append(f"4\\. hostMap değerleri:")
+                        for k, v in host_map.items():
+                            safe_v = str(v).replace("_", "\\_").replace(".", "\\.")
+                            lines.append(f"  `{k}`: {safe_v}")
+
+                        # Show accessToken
+                        token = page_props.get("accessToken")
+                        lines.append(f"5\\. accessToken: `{str(token)[:60]}`")
+
+                        # Show all pageProps top-level keys
+                        lines.append(f"6\\. pageProps keys: {list(page_props.keys())}")
+
                     except Exception as ex:
-                        lines.append(f"4\\. \\_\\_NEXT\\_DATA\\_\\_ parse hata: {ex}")
+                        lines.append(f"4\\. parse hata: {ex}")
                 else:
                     lines.append("4\\. \\_\\_NEXT\\_DATA\\_\\_ bulunamadı")
 
