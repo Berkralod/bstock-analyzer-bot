@@ -325,30 +325,51 @@ async def cmd_debug(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                                 except Exception as e:
                                     lines.append(f"ERR: {str(e)[:50]}")
 
-                        # Ingestion API via numeric lot ID from title
+                        # Manifest discovery: probe every known pattern
                         import re as _re
+                        listing_lot_id = listing_data.get("lotId") or ""
+                        lines.append(f"listing.lotId: {listing_lot_id}")
+
+                        auction_title = ""
                         if auctions:
                             auction_title = (auctions[0].get("attributes") or {}).get("title", "") or auctions[0].get("title", "")
                             lines.append(f"auction title: {auction_title[:200]}")
-                            nm = _re.search(r'[-\(](\d{5,8})\)?', auction_title)
-                            if nm:
-                                numeric_id = nm.group(1)
-                                lines.append(f"numeric_lot_id: {numeric_id}")
-                                for ing_url in [
-                                    f"https://ingestion.bstock.com/v1/lots/{numeric_id}/items",
-                                    f"https://ingestion.bstock.com/v1/lots/{numeric_id}",
-                                    f"https://ingestion.bstock.com/v1/manifests/{numeric_id}",
-                                    f"https://ingestion.bstock.com/v1/manifests/{numeric_id}/items",
-                                ]:
+
+                        nm = _re.search(r'[-\(](\d{5,8})\)?', auction_title)
+                        numeric_id = nm.group(1) if nm else None
+                        lines.append(f"numeric_lot_id from title: {numeric_id}")
+
+                        probe_ids = list({uid, listing_lot_id, numeric_id} - {None, ""})
+                        probe_bases = [
+                            ("ingestion", "https://ingestion.bstock.com/v1"),
+                            ("listing",   "https://listing.bstock.com/v1"),
+                            ("auction",   "https://auction.bstock.com/v1"),
+                        ]
+                        probe_paths = [
+                            "/lots/{id}/items",
+                            "/lots/{id}",
+                            "/manifests/{id}",
+                            "/manifests/{id}/items",
+                            "/listings/{id}/manifest",
+                            "/listings/{id}/items",
+                            "/listings/{id}/products",
+                            "/auctions/{id}/items",
+                            "/auctions/{id}/manifest",
+                        ]
+                        for base_name, base_url in probe_bases:
+                            for pid in probe_ids:
+                                for path_tpl in probe_paths:
+                                    path = path_tpl.replace("{id}", pid)
+                                    full = base_url + path
                                     try:
-                                        ri = await client.get(ing_url, headers=listing_headers, timeout=8.0)
-                                        lines.append(f"INGESTION [{ri.status_code}] {ing_url.split('.com')[1]}: {ri.text[:200]}")
-                                        if ri.status_code == 200:
-                                            break
+                                        rp = await client.get(full, headers=listing_headers, timeout=6.0)
+                                        if rp.status_code == 200:
+                                            lines.append(f"HIT [{rp.status_code}] {base_name}{path}: {rp.text[:300]}")
+                                        # only log non-404 failures to keep output short
+                                        elif rp.status_code not in (404, 403):
+                                            lines.append(f"[{rp.status_code}] {base_name}{path}")
                                     except Exception as e:
-                                        lines.append(f"INGESTION ERR: {str(e)[:60]}")
-                            else:
-                                lines.append("numeric_lot_id: NOT FOUND in title")
+                                        pass
 
                     else:
                         lines.append(r3.text[:200])
