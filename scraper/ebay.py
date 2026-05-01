@@ -5,7 +5,7 @@ from typing import Dict, Any
 from bs4 import BeautifulSoup
 import config
 from utils.cache import Cache
-from utils.proxy import brightdata_proxies
+from utils.proxy import fetch_via_brightdata
 
 # eBay Finding API — free, no scraping, <1s per call
 _FINDING_API = "https://svcs.ebay.com/services/search/FindingService/v1"
@@ -97,34 +97,26 @@ class EbayScraper:
             return _empty if sold else {"count": 0}
 
     async def _scrape_via_brightdata(self, query: str, sold: bool) -> Dict[str, Any]:
-        """Scrape eBay completed listings via BrightData proxy."""
-        proxies = brightdata_proxies()
+        """Scrape eBay via BrightData Web Unlocker Direct API."""
         _empty = {"avg": None, "median": None, "min": None, "max": None, "count": 0}
-        if not proxies:
-            return _empty if sold else {"count": 0}
 
+        import urllib.parse
         params: dict = {"_nkw": query, "_ipg": "60", "_sop": "13"}
         if sold:
             params["LH_Complete"] = "1"
             params["LH_Sold"] = "1"
+        url = f"{_EBAY_SEARCH}?{urllib.parse.urlencode(params)}"
 
-        try:
-            async with _semaphore:
-                timeout = httpx.Timeout(connect=8.0, read=25.0, write=5.0, pool=3.0)
-                async with httpx.AsyncClient(
-                    proxies=proxies, timeout=timeout, verify=False, follow_redirects=True
-                ) as client:
-                    resp = await client.get(_EBAY_SEARCH, params=params, headers=_HEADERS)
-                    if resp.status_code != 200 or len(resp.text) < 2000:
-                        return _empty if sold else {"count": 0}
-                    html = resp.text
+        async with _semaphore:
+            html = await fetch_via_brightdata(url)
 
-            prices = self._parse_html_prices(html)
-            if sold:
-                return self._compute_stats(prices)
-            return {"count": len(prices)}
-        except Exception:
+        if not html:
             return _empty if sold else {"count": 0}
+
+        prices = self._parse_html_prices(html)
+        if sold:
+            return self._compute_stats(prices)
+        return {"count": len(prices)}
 
     def _parse_html_prices(self, html: str) -> list:
         soup = BeautifulSoup(html, "lxml")

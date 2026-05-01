@@ -439,28 +439,23 @@ async def cmd_testebay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     except Exception as e:
         lines.append(f"eBay direct ERR: {str(e)[:100]}")
 
-    # Test 3: eBay via BrightData
-    from utils.proxy import brightdata_proxies as _bd_proxies
-    bd_proxies = _bd_proxies()
-    if bd_proxies:
-        try:
-            async with httpx.AsyncClient(
-                proxies=bd_proxies,
-                timeout=httpx.Timeout(connect=5.0, read=20.0, write=5.0, pool=3.0),
-                verify=False, follow_redirects=True,
-            ) as client:
-                r = await client.get(
-                    "https://www.ebay.com/sch/i.html",
-                    params={"_nkw": query, "LH_Complete": "1", "LH_Sold": "1", "_ipg": "5"},
-                    headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36"},
-                )
-                lines.append(f"eBay BrightData: HTTP {r.status_code}, {len(r.text)} chars")
-                if r.status_code == 200:
-                    from bs4 import BeautifulSoup as _BS2
-                    prices2 = [el.get_text(strip=True) for el in _BS2(r.text, "lxml").select(".s-item__price")[:5]]
-                    lines.append(f"Prices found: {prices2}")
-        except Exception as e:
-            lines.append(f"eBay BrightData ERR: {str(e)[:150]}")
+    # Test 3: eBay via BrightData Direct API
+    from utils.proxy import fetch_via_brightdata as _bd_fetch
+    import urllib.parse as _up
+    bd_url = "https://www.ebay.com/sch/i.html?" + _up.urlencode(
+        {"_nkw": query, "LH_Complete": "1", "LH_Sold": "1", "_ipg": "5"}
+    )
+    try:
+        html3 = await _bd_fetch(bd_url)
+        if html3:
+            from bs4 import BeautifulSoup as _BS2
+            prices3 = [el.get_text(strip=True) for el in _BS2(html3, "lxml").select(".s-item__price")[:5]]
+            lines.append(f"eBay BrightData Direct API: OK, {len(html3)} chars")
+            lines.append(f"Prices: {prices3}")
+        else:
+            lines.append("eBay BrightData Direct API: no response")
+    except Exception as e:
+        lines.append(f"eBay BrightData ERR: {str(e)[:150]}")
 
     await msg.edit_text("\n".join(lines)[:4000])
 
