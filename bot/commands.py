@@ -439,53 +439,48 @@ async def cmd_testebay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     except Exception as e:
         lines.append(f"eBay direct ERR: {str(e)[:100]}")
 
-    # Test 3: eBay via BrightData Direct API
-    from utils.proxy import fetch_via_brightdata as _bd_fetch
     import urllib.parse as _up
     bd_url = "https://www.ebay.com/sch/i.html?" + _up.urlencode(
-        {"_nkw": query, "LH_Complete": "1", "LH_Sold": "1", "_ipg": "5"}
+        {"_nkw": query, "LH_Complete": "1", "LH_Sold": "1", "_ipg": "60"}
     )
+    import config as _cfg2
+    _api_key = getattr(_cfg2, "BRIGHTDATA_API_KEY", "")
+    _zone = getattr(_cfg2, "BRIGHTDATA_ZONE", "web_unlocker1")
+    lines.append(f"BD key (last 8): ...{_api_key[-8:] if _api_key else 'EMPTY'}")
+
+    # Test 3a: BrightData WITHOUT JS render
     try:
-        import config as _cfg2
-        _api_key = getattr(_cfg2, "BRIGHTDATA_API_KEY", "")
-        _zone = getattr(_cfg2, "BRIGHTDATA_ZONE", "web_unlocker1")
-        lines.append(f"BD key (last 8): ...{_api_key[-8:] if _api_key else 'EMPTY'}")
-        async with httpx.AsyncClient(timeout=30.0) as _c:
+        async with httpx.AsyncClient(timeout=35.0) as _c:
             _r = await _c.post(
                 "https://api.brightdata.com/request",
                 headers={"Content-Type": "application/json", "Authorization": f"Bearer {_api_key}"},
                 json={"zone": _zone, "url": bd_url, "format": "raw"},
             )
-            lines.append(f"eBay BrightData Direct API: HTTP {_r.status_code}, {len(_r.text)} chars")
-            if _r.status_code != 200:
-                lines.append(f"BD response: {_r.text[:300]}")
-            else:
+            lines.append(f"BD no-render: HTTP {_r.status_code}, {len(_r.text)} chars")
+            if _r.status_code == 200:
                 from bs4 import BeautifulSoup as _BS2
-                _soup = _BS2(_r.text, "lxml")
-                prices3 = [el.get_text(strip=True) for el in _soup.select(".s-item__price")[:5]]
-                lines.append(f"Prices (.s-item__price): {prices3}")
-                import re as _re
-                raw = _r.text
-                # Search raw HTML directly (BS .string fails on large scripts)
-                if "currentPrice" in raw:
-                    idx = raw.find("currentPrice")
-                    lines.append(f"currentPrice context: {raw[idx-5:idx+150]}")
-                    hits = _re.findall(r'"currentPrice"\s*:\s*\{[^}]*?"value"\s*:\s*"?([0-9.]+)"?', raw)
-                    if not hits:
-                        hits = _re.findall(r'"currentPrice"\s*:\s*([0-9.]+)', raw)
-                    lines.append(f"currentPrice values ({len(hits)}): {hits[:10]}")
-                elif "convertedCurrentPrice" in raw:
-                    idx = raw.find("convertedCurrentPrice")
-                    lines.append(f"convertedCurrentPrice context: {raw[idx-5:idx+150]}")
-                    hits = _re.findall(r'"convertedCurrentPrice"\s*:\s*\{[^}]*?"value"\s*:\s*"?([0-9.]+)"?', raw)
-                    lines.append(f"convertedCurrentPrice values ({len(hits)}): {hits[:10]}")
-                else:
-                    # Show what price-like JSON keys exist
-                    price_keys = _re.findall(r'"(\w*[Pp]rice\w*)"\s*:', raw)
-                    unique_keys = list(dict.fromkeys(price_keys))[:20]
-                    lines.append(f"Price-like JSON keys in page: {unique_keys}")
+                prices_a = [el.get_text(strip=True) for el in _BS2(_r.text, "lxml").select(".s-item__price")[:5]]
+                lines.append(f"  .s-item__price: {prices_a}")
     except Exception as e:
-        lines.append(f"eBay BrightData ERR: {type(e).__name__}: {repr(e)[:300]}")
+        lines.append(f"BD no-render ERR: {type(e).__name__}: {repr(e)[:200]}")
+
+    # Test 3b: BrightData WITH JS render
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as _c:
+            _r2 = await _c.post(
+                "https://api.brightdata.com/request",
+                headers={"Content-Type": "application/json", "Authorization": f"Bearer {_api_key}"},
+                json={"zone": _zone, "url": bd_url, "format": "raw", "render": "html"},
+            )
+            lines.append(f"BD js-render: HTTP {_r2.status_code}, {len(_r2.text)} chars")
+            if _r2.status_code == 200:
+                from bs4 import BeautifulSoup as _BS3
+                prices_b = [el.get_text(strip=True) for el in _BS3(_r2.text, "lxml").select(".s-item__price")[:5]]
+                lines.append(f"  .s-item__price: {prices_b}")
+            else:
+                lines.append(f"  response: {_r2.text[:200]}")
+    except Exception as e:
+        lines.append(f"BD js-render ERR: {type(e).__name__}: {repr(e)[:200]}")
 
     await msg.edit_text("\n".join(lines)[:4000])
 
