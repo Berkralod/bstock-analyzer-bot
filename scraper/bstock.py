@@ -1,5 +1,6 @@
 import httpx
 import re
+import json
 from bs4 import BeautifulSoup
 import config
 from models.lot import Lot
@@ -13,12 +14,22 @@ HEADERS = {
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/124.0.0.0 Safari/537.36"
     ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept": "application/json, text/html,application/xhtml+xml,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
 }
 
 LOGIN_URL = "https://bstock.com/api/auth/login"
 BSTOCK_HOME = "https://bstock.com"
+
+# B-Stock internal API patterns — React frontend calls these
+API_PATTERNS = [
+    "https://bstock.com/api/listings/{uid}",
+    "https://bstock.com/api/v1/listings/{uid}",
+    "https://bstock.com/api/auctions/{uid}",
+    "https://bstock.com/api/lots/{uid}",
+    "https://bstock.com/api/v1/auctions/{uid}",
+    "https://bstock.com/api/listing-details/{uid}",
+]
 
 
 def _bright_data_proxies() -> dict | None:
@@ -34,6 +45,7 @@ class BStockScraper:
     def __init__(self) -> None:
         self._haiku = HaikuClient()
         self._cookies: dict = {}
+        self._auth_token: str = ""
 
     async def _login(self, client: httpx.AsyncClient) -> bool:
         email = getattr(config, "BSTOCK_EMAIL", "")
@@ -41,7 +53,6 @@ class BStockScraper:
         if not email or not password:
             return False
         try:
-            # Get CSRF / session cookie first
             await client.get(BSTOCK_HOME, headers=HEADERS)
             resp = await client.post(
                 LOGIN_URL,
@@ -51,8 +62,21 @@ class BStockScraper:
             )
             if resp.status_code in (200, 201, 302):
                 self._cookies = dict(client.cookies)
+                # Try to extract JWT/bearer token from response body
+                try:
+                    data = resp.json()
+                    token = (
+                        data.get("token")
+                        or data.get("access_token")
+                        or data.get("accessToken")
+                        or (data.get("data") or {}).get("token")
+                    )
+                    if token:
+                        self._auth_token = token
+                except Exception:
+                    pass
                 return True
-            # Try form-based login as fallback
+            # Form-based fallback
             resp2 = await client.post(
                 "https://bstock.com/login",
                 data={"email": email, "password": password},
@@ -66,44 +90,95 @@ class BStockScraper:
             pass
         return False
 
-    async def _fetch_url(self, url: str) -> str:
-        # Try with existing cookies first (already logged in)
-        try:
-            async with httpx.AsyncClient(
-                timeout=25.0, follow_redirects=True, cookies=self._cookies
-            ) as client:
-                resp = await client.get(url, headers=HEADERS)
-                if resp.status_code == 200 and len(resp.text) > 1000:
-                    return resp.text
-        except Exception:
-            pass
+    def _auth_headers(self) -> dict:
+        h = dict(HEADERS)
+        if self._auth_token:
+            h["Authorization"] = f"Bearer {self._auth_token}"
+        return h
 
-        # Try fresh session with login
+    async def _try_json_api(self, uid: str, client: httpx.AsyncClient) -> dict | None:
+        """Try B-Stock internal JSON API endpoints."""
+        for pattern in API_PATTERNS:
+            url = pattern.format(uid=uid)
+            try:
+                resp = await client.get(
+                    url,
+                    headers={**self._auth_headers(), "Accept": "application/json"},
+                    timeout=15.0,
+                )
+                if resp.status_code == 200:
+                    ct = resp.headers.get("content-type", "")
+                    if "json" in ct:
+                        return resp.json()
+                    # Sometimes returns JSON with wrong content-type
+                    try:
+                        data = resp.json()
+                        if isinstance(data, dict) and (
+                            data.get("products") or data.get("items")
+                            or data.get("manifest") or data.get("lots")
+                            or data.get("data")
+                        ):
+                            return data
+                    except Exception:
+                        pass
+            except Exception:
+                continue
+        return None
+
+    async def _fetch_url(self, url: str) -> tuple[str, dict | None]:
+        """Returns (html, json_data). json_data takes priority if not None."""
+        uid = extract_lot_id(url)
+
+        # 1. Try with existing cookies + JSON API
+        if self._cookies or self._auth_token:
+            try:
+                async with httpx.AsyncClient(
+                    timeout=25.0, follow_redirects=True, cookies=self._cookies
+                ) as client:
+                    if uid:
+                        data = await self._try_json_api(uid, client)
+                        if data:
+                            return "", data
+                    resp = await client.get(url, headers=HEADERS)
+                    if resp.status_code == 200 and len(resp.text) > 1000:
+                        return resp.text, None
+            except Exception:
+                pass
+
+        # 2. Fresh login session
         email = getattr(config, "BSTOCK_EMAIL", "")
         if email:
             try:
                 async with httpx.AsyncClient(
-                    timeout=30.0, follow_redirects=True
+                    timeout=35.0, follow_redirects=True
                 ) as client:
                     logged_in = await self._login(client)
-                    resp = await client.get(url, headers=HEADERS)
+                    if logged_in and uid:
+                        data = await self._try_json_api(uid, client)
+                        if data:
+                            return "", data
+                    resp = await client.get(url, headers=self._auth_headers())
                     if resp.status_code == 200 and len(resp.text) > 1000:
-                        return resp.text
+                        return resp.text, None
             except Exception:
                 pass
 
-        # Fallback: Bright Data proxy
+        # 3. Bright Data Web Unlocker proxy (renders JS, bypasses blocks)
         proxies = _bright_data_proxies()
         if proxies:
             try:
                 async with httpx.AsyncClient(
-                    proxies=proxies, timeout=30.0, follow_redirects=True, verify=False
+                    proxies=proxies, timeout=35.0, follow_redirects=True, verify=False
                 ) as client:
                     if email:
                         await self._login(client)
-                    resp = await client.get(url, headers=HEADERS)
+                    if uid:
+                        data = await self._try_json_api(uid, client)
+                        if data:
+                            return "", data
+                    resp = await client.get(url, headers=self._auth_headers())
                     if resp.status_code == 200:
-                        return resp.text
+                        return resp.text, None
             except Exception as e:
                 raise RuntimeError(f"Bright Data proxy hatası: {e}")
 
@@ -113,41 +188,115 @@ class BStockScraper:
         )
 
     async def scrape_lot(self, url: str) -> Lot:
-        html = await self._fetch_url(url)
-        lot = await self._parse_html(url, html)
+        html, json_data = await self._fetch_url(url)
+        lot = await self._parse(url, html, json_data)
         lot.compute_totals()
         return lot
 
-    async def _parse_html(self, url: str, html: str) -> Lot:
-        soup = BeautifulSoup(html, "lxml")
+    async def _parse(self, url: str, html: str, json_data: dict | None) -> Lot:
         lot = Lot(url=url, lot_id=extract_lot_id(url))
 
-        products = self._parse_structured(soup, lot)
+        if json_data:
+            products = self._parse_json(json_data, lot)
+            if products:
+                lot.products = products
+                return lot
 
-        # Always try Haiku if structured parse finds <2 products
-        if len(products) < 2:
+        if html:
+            products = self._parse_structured(BeautifulSoup(html, "lxml"), lot)
+            if len(products) < 2:
+                try:
+                    parsed = await self._haiku.parse_bstock_html(html)
+                    if parsed.get("products"):
+                        lot.title = lot.title or parsed.get("title")
+                        lot.current_bid = lot.current_bid or parsed.get("current_bid")
+                        lot.shipping_cost = lot.shipping_cost or parsed.get("shipping_cost")
+                        if not products:
+                            if parsed.get("buyers_premium_rate"):
+                                lot.buyers_premium_rate = parsed["buyers_premium_rate"]
+                            lot.manifest_url = parsed.get("manifest_url")
+                            for p_data in parsed.get("products", []):
+                                products.append(Product(
+                                    name=p_data.get("name", "Unknown"),
+                                    condition=normalize_condition(p_data.get("condition", "")),
+                                    quantity=int(p_data.get("quantity", 1)),
+                                    listed_msrp=clean_price(str(p_data.get("msrp", "") or "")),
+                                ))
+                except Exception:
+                    pass
+            lot.products = products
+
+        return lot
+
+    def _parse_json(self, data: dict, lot: Lot) -> list:
+        """Parse B-Stock internal API JSON response."""
+        products = []
+
+        # Unwrap common envelope patterns
+        payload = data
+        for key in ("data", "result", "listing", "auction", "lot"):
+            if isinstance(data.get(key), dict):
+                payload = data[key]
+                break
+
+        lot.title = lot.title or payload.get("title") or payload.get("name") or payload.get("lotTitle")
+        lot.current_bid = lot.current_bid or clean_price(str(payload.get("currentBid") or payload.get("current_bid") or ""))
+        lot.shipping_cost = lot.shipping_cost or clean_price(str(payload.get("shippingCost") or payload.get("shipping_cost") or ""))
+
+        premium = payload.get("buyersPremium") or payload.get("buyers_premium") or payload.get("buyerPremium")
+        if premium:
             try:
-                parsed = await self._haiku.parse_bstock_html(html)
-                if parsed.get("products"):
-                    lot.title = lot.title or parsed.get("title")
-                    lot.current_bid = lot.current_bid or parsed.get("current_bid")
-                    lot.shipping_cost = lot.shipping_cost or parsed.get("shipping_cost")
-                    if not products:
-                        if parsed.get("buyers_premium_rate"):
-                            lot.buyers_premium_rate = parsed["buyers_premium_rate"]
-                        lot.manifest_url = parsed.get("manifest_url")
-                        for p_data in parsed.get("products", []):
-                            products.append(Product(
-                                name=p_data.get("name", "Unknown"),
-                                condition=normalize_condition(p_data.get("condition", "")),
-                                quantity=int(p_data.get("quantity", 1)),
-                                listed_msrp=clean_price(str(p_data.get("msrp", "") or "")),
-                            ))
+                rate = float(str(premium).replace("%", "").strip())
+                lot.buyers_premium_rate = rate / 100 if rate > 1 else rate
             except Exception:
                 pass
 
-        lot.products = products
-        return lot
+        # Find products list under various keys
+        items = (
+            payload.get("products")
+            or payload.get("items")
+            or payload.get("manifest")
+            or payload.get("manifestItems")
+            or payload.get("lots")
+            or []
+        )
+        if isinstance(items, dict):
+            items = items.get("items") or items.get("data") or []
+
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            name = (
+                item.get("productName") or item.get("name") or item.get("title")
+                or item.get("description") or ""
+            )
+            if not name or len(name) < 3:
+                continue
+            condition_text = (
+                item.get("condition") or item.get("conditionName")
+                or item.get("grade") or ""
+            )
+            qty = 1
+            for qk in ("quantity", "qty", "count", "units"):
+                if item.get(qk):
+                    try:
+                        qty = int(item[qk])
+                        break
+                    except Exception:
+                        pass
+            msrp_raw = (
+                item.get("msrp") or item.get("retailPrice") or item.get("retail_price")
+                or item.get("listPrice") or ""
+            )
+            msrp = clean_price(str(msrp_raw))
+            products.append(Product(
+                name=name,
+                condition=normalize_condition(condition_text),
+                quantity=qty,
+                listed_msrp=msrp,
+            ))
+
+        return products
 
     def _parse_structured(self, soup: BeautifulSoup, lot: Lot) -> list:
         products = []
@@ -184,7 +333,31 @@ class BStockScraper:
         if manifest:
             lot.manifest_url = manifest.get("href")
 
-        # Broader row selectors
+        # Extract JSON from Next.js __NEXT_DATA__ or window.__STATE__
+        for script in soup.find_all("script", {"id": "__NEXT_DATA__"}):
+            try:
+                next_data = json.loads(script.string)
+                page_props = (
+                    next_data.get("props", {}).get("pageProps", {})
+                )
+                # Try to find listing/auction data in pageProps
+                for key in ("listing", "auction", "lot", "data", "initialData"):
+                    val = page_props.get(key)
+                    if isinstance(val, dict):
+                        parsed_products = self._parse_json(val, lot)
+                        if parsed_products:
+                            return parsed_products
+                # Also try top-level dehydratedState (React Query)
+                dehydrated = page_props.get("dehydratedState") or {}
+                for query in (dehydrated.get("queries") or []):
+                    qdata = (query.get("state") or {}).get("data") or {}
+                    if isinstance(qdata, dict):
+                        parsed_products = self._parse_json(qdata, lot)
+                        if parsed_products:
+                            return parsed_products
+            except Exception:
+                pass
+
         row_selectors = [
             ".manifest-row", ".product-row", ".item-row",
             "table tbody tr", "[class*='manifest'] tr",

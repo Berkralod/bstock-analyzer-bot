@@ -60,10 +60,18 @@ def estimate_shipping_cost(weight_lbs: float | None, category: str | None = None
 
 
 def extract_lot_id(url: str) -> str | None:
+    # UUID pattern: /listings/details/{uuid} or /auctions/{uuid}
+    m = re.search(r"/(?:listings/details|auctions|lots?)/([a-f0-9-]{8,})", url, re.IGNORECASE)
+    if m:
+        return m.group(1)
     m = re.search(r"/lot/(\d+)", url)
     if m:
         return m.group(1)
     m = re.search(r"lot[_-]?id[=:](\w+)", url, re.IGNORECASE)
+    if m:
+        return m.group(1)
+    # Last segment of path
+    m = re.search(r"/([a-f0-9-]{32,})", url)
     if m:
         return m.group(1)
     return None
