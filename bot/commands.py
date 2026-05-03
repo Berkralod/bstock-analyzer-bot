@@ -419,7 +419,7 @@ async def cmd_testebay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                     "paginationInput.entriesPerPage": "5",
                 }
                 r = await client.get("https://svcs.ebay.com/services/search/FindingService/v1", params=params)
-                lines.append(f"Finding API: HTTP {r.status_code} | {r.text[:200]}")
+                lines.append(f"Finding API: HTTP {r.status_code} | {r.text[:500]}")
         except Exception as e:
             lines.append(f"Finding API ERR: {e}")
 
