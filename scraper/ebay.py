@@ -12,10 +12,13 @@ _INSIGHTS_API = "https://api.ebay.com/buy/marketplace_insights/v1_beta/item_sale
 _TOKEN_URL = "https://api.ebay.com/identity/v1/oauth2/token"
 _EBAY_CERT_ID = "PRD-6c21b7a29737-ebe0-43a4-bd70-f269"
 
-_semaphore = asyncio.Semaphore(4)
+_semaphore = asyncio.Semaphore(6)
 
 # In-memory token cache
 _token_cache: dict = {"token": None, "expires_at": 0}
+
+# Skip insights API after first 403 (insufficient permissions — no beta access)
+_insights_disabled = False
 
 
 class EbayScraper:
@@ -43,32 +46,31 @@ class EbayScraper:
         return count
 
     async def _get_prices(self, query: str, sold: bool) -> Dict[str, Any]:
+        global _insights_disabled
         token = await self._get_token()
         if not token:
             return {"avg": None, "median": None, "min": None, "max": None, "count": 0}
-        # Try sold items endpoint first, fall back to active listings
-        if sold:
+
+        if sold and not _insights_disabled:
             result = await self._insights_api(query, token)
             if result.get("avg"):
                 return result
-            # Fallback: use active listing prices with discount factor
-            result = await self._browse_api(query, token)
-            if result.get("avg"):
-                # Active prices ~15% higher than actual sold prices on average
-                avg = result["avg"]
-                median = result["median"]
-                mn = result["min"]
-                mx = result["max"]
-                return {
-                    "avg": round(avg * 0.85, 2),
-                    "median": round(median * 0.85, 2) if median else None,
-                    "min": round(mn * 0.85, 2) if mn else None,
-                    "max": round(mx * 0.85, 2) if mx else None,
-                    "count": result.get("count", 0),
-                }
-            return result
-        else:
-            return await self._browse_api(query, token)
+
+        # Browse API — active listing prices, apply 0.85 factor for sold estimate
+        result = await self._browse_api(query, token)
+        if result.get("avg") and sold:
+            avg = result["avg"]
+            median = result["median"]
+            mn = result["min"]
+            mx = result["max"]
+            return {
+                "avg": round(avg * 0.85, 2),
+                "median": round(median * 0.85, 2) if median else None,
+                "min": round(mn * 0.85, 2) if mn else None,
+                "max": round(mx * 0.85, 2) if mx else None,
+                "count": result.get("count", 0),
+            }
+        return result
 
     async def _get_token(self) -> Optional[str]:
         app_id = getattr(config, "EBAY_APP_ID", "")
@@ -103,11 +105,12 @@ class EbayScraper:
         return None
 
     async def _insights_api(self, query: str, token: str) -> Dict[str, Any]:
-        """Marketplace Insights API — actual sold prices (beta)."""
+        """Marketplace Insights API — actual sold prices (beta, may not be available)."""
+        global _insights_disabled
         _empty: Dict[str, Any] = {"avg": None, "median": None, "min": None, "max": None, "count": 0}
         try:
             async with _semaphore:
-                async with httpx.AsyncClient(timeout=12.0) as client:
+                async with httpx.AsyncClient(timeout=6.0) as client:
                     resp = await client.get(
                         _INSIGHTS_API,
                         headers={
@@ -116,6 +119,9 @@ class EbayScraper:
                         },
                         params={"q": query, "limit": "50"},
                     )
+                    if resp.status_code == 403:
+                        _insights_disabled = True
+                        return _empty
                     if resp.status_code != 200:
                         return _empty
                     data = resp.json()
