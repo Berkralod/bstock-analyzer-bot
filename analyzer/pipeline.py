@@ -40,14 +40,15 @@ class AnalysisPipeline:
             result.error = "No products found in lot."
             return result
 
-        # Normalize product names skipped — MSRP-based fallback doesn't need normalized names
-
-        # Layer 1: skipped (Google Shopping too slow in production)
+        # Limit to top 30 products by MSRP to keep analysis under 60s
+        products = lot.products
+        if len(products) > 30:
+            products = sorted(products, key=lambda p: (p.listed_msrp or 0) * p.quantity, reverse=True)[:30]
 
         # Layer 2: Market price analysis (all products, parallel)
-        product_analyses: List[ProductAnalysis] = await self._layer2.analyze_all(lot.products)
+        product_analyses: List[ProductAnalysis] = await self._layer2.analyze_all(products)
 
-        # Compute per-unit cost share
+        # Compute per-unit cost share (use full lot product list for cost)
         total_units = max(1, sum(p.quantity for p in lot.products))
         cost_per_unit = (lot.total_cost or 0) / total_units
 
