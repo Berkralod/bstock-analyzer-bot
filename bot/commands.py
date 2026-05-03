@@ -404,7 +404,7 @@ async def cmd_testebay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     lines.append(f"BrightData key: {'SET' if bd_key else 'MISSING'}")
     lines.append(f"eBay App ID: {'SET' if ebay_app_id else 'MISSING'}")
 
-    # Test 1: eBay Finding API
+    # Test 1a: findCompletedItems
     if ebay_app_id:
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
@@ -419,9 +419,50 @@ async def cmd_testebay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                     "paginationInput.entriesPerPage": "5",
                 }
                 r = await client.get("https://svcs.ebay.com/services/search/FindingService/v1", params=params)
-                lines.append(f"Finding API: HTTP {r.status_code} | {r.text[:500]}")
+                lines.append(f"findCompletedItems: HTTP {r.status_code} | {r.text[:300]}")
         except Exception as e:
-            lines.append(f"Finding API ERR: {e}")
+            lines.append(f"findCompletedItems ERR: {e}")
+
+    # Test 1b: findItemsByKeywords (basic search — less restricted)
+    if ebay_app_id:
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                params2 = {
+                    "OPERATION-NAME": "findItemsByKeywords",
+                    "SERVICE-VERSION": "1.0.0",
+                    "SECURITY-APPNAME": ebay_app_id,
+                    "RESPONSE-DATA-FORMAT": "JSON",
+                    "keywords": query,
+                    "paginationInput.entriesPerPage": "3",
+                }
+                r2 = await client.get("https://svcs.ebay.com/services/search/FindingService/v1", params=params2)
+                lines.append(f"findItemsByKeywords: HTTP {r2.status_code} | {r2.text[:300]}")
+        except Exception as e:
+            lines.append(f"findItemsByKeywords ERR: {e}")
+
+    # Test 1c: Browse API with OAuth (modern replacement)
+    if ebay_app_id:
+        import base64 as _b64
+        cert_id = "PRD-6c21b7a29737-ebe0-43a4-bd70-f269"
+        try:
+            creds = _b64.b64encode(f"{ebay_app_id}:{cert_id}".encode()).decode()
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                tok_r = await client.post(
+                    "https://api.ebay.com/identity/v1/oauth2/token",
+                    headers={"Authorization": f"Basic {creds}", "Content-Type": "application/x-www-form-urlencoded"},
+                    data={"grant_type": "client_credentials", "scope": "https://api.ebay.com/oauth/api_scope"},
+                )
+                lines.append(f"OAuth token: HTTP {tok_r.status_code} | {tok_r.text[:200]}")
+                if tok_r.status_code == 200:
+                    token = tok_r.json().get("access_token", "")
+                    browse_r = await client.get(
+                        "https://api.ebay.com/buy/browse/v1/item_summary/search",
+                        headers={"Authorization": f"Bearer {token}", "X-EBAY-C-MARKETPLACE-ID": "EBAY_US"},
+                        params={"q": query, "limit": "3"},
+                    )
+                    lines.append(f"Browse API: HTTP {browse_r.status_code} | {browse_r.text[:300]}")
+        except Exception as e:
+            lines.append(f"Browse API ERR: {e}")
 
     # Test 2: eBay direct (no proxy)
     try:
