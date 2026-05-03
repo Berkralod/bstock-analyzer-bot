@@ -4,6 +4,64 @@ from models.product import Condition
 
 T = TypeVar("T")
 
+_VENDOR_SHORT: dict[str, str] = {
+    "APPLE COMPUTER INC": "Apple",
+    "APPLE INC": "Apple",
+    "SAMSUNG ELECTRONICS AMERICA": "Samsung",
+    "SAMSUNG ELECTRONICS": "Samsung",
+    "MICROSOFT CORPORATION": "Microsoft",
+    "SONY CORPORATION": "Sony",
+    "SONY ELECTRONICS": "Sony",
+    "DELL TECHNOLOGIES INC": "Dell",
+    "DELL INC": "Dell",
+    "HP INC": "HP",
+    "HEWLETT PACKARD": "HP",
+    "LENOVO GROUP LIMITED": "Lenovo",
+    "LENOVO": "Lenovo",
+    "LG ELECTRONICS INC": "LG",
+    "LG ELECTRONICS": "LG",
+}
+
+# B-Stock internal abbreviations → human-readable
+_PHRASE_MAP: dict[str, str] = {
+    "MGC KB FOR": "Magic Keyboard for",
+    "MGC KB": "Magic Keyboard",
+    "MGC MOUSE": "Magic Mouse",
+    "MGC TRACKPAD": "Magic Trackpad",
+    "APPL PENCIL": "Apple Pencil",
+    "APCL PENCIL": "Apple Pencil",
+}
+
+# Trailing noise tokens (color/finish codes that don't help eBay search)
+_NOISE_TOKENS = {
+    "BL", "WHT", "BLK", "SLV", "GLD", "RED", "GRY", "GRPH",
+    "MIDNIGHT", "STARLIGHT", "PINK", "PURPLE", "YELLOW",
+}
+
+
+def clean_ebay_query(name: str) -> str:
+    """Convert raw B-Stock product name to a clean eBay search query."""
+    if not name:
+        return name
+
+    # Replace verbose vendor prefix with short brand name
+    upper = name.upper()
+    for vendor, short in _VENDOR_SHORT.items():
+        if upper.startswith(vendor):
+            name = short + " " + name[len(vendor):].strip()
+            break
+
+    # Expand B-Stock abbreviations (case-insensitive, whole-word)
+    for abbrev, expansion in _PHRASE_MAP.items():
+        name = re.sub(r"(?<!\w)" + re.escape(abbrev) + r"(?!\w)", expansion, name, flags=re.IGNORECASE)
+
+    # Drop trailing noise tokens (color/finish codes)
+    words = name.split()
+    while words and words[-1].upper() in _NOISE_TOKENS:
+        words.pop()
+
+    return re.sub(r"\s+", " ", " ".join(words)).strip()
+
 
 def clean_price(text: str) -> float | None:
     if not text:

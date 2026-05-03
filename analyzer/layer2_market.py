@@ -2,6 +2,7 @@ import asyncio
 from models.product import Product
 from models.analysis import ProductAnalysis
 from scraper.ebay import EbayScraper
+from utils.helpers import clean_ebay_query
 
 
 class Layer2Market:
@@ -13,7 +14,7 @@ class Layer2Market:
         return list(await asyncio.gather(*tasks, return_exceptions=False))
 
     async def _analyze_product(self, product: Product) -> ProductAnalysis:
-        name = product.normalized_name or product.name
+        name = clean_ebay_query(product.normalized_name or product.name)
         condition_str = product.condition.value
 
         # eBay Finding API — real sold prices, no scraping

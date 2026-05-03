@@ -5,7 +5,7 @@ from bs4 import BeautifulSoup
 import config
 from models.lot import Lot
 from models.product import Product
-from utils.helpers import clean_price, normalize_condition, extract_lot_id
+from utils.helpers import clean_price, normalize_condition, extract_lot_id, clean_ebay_query
 from utils.haiku import HaikuClient
 
 HEADERS = {
@@ -328,13 +328,26 @@ class BStockScraper:
             # Lot ID from listing prettyId / formattedPrettyId
             lot.lot_id = lot.lot_id or listing.get("prettyId") or listing.get("formattedPrettyId")
 
-            # Current bid from auction (all B-Stock API monetary fields are in cents)
-            win_bid = (
+            # Fixed-price listing: price lives in the listing record, not the auction
+            listing_price = (
+                listing.get("fixedPrice")
+                or listing.get("price")
+                or listing.get("askingPrice")
+                or listing.get("buyNowPrice")
+                or listing.get("basePrice")
+                or listing.get("salePrice")
+            )
+
+            # Auction lot: current / winning bid (all monetary fields are in cents)
+            auction_bid = (
                 auction.get("winningBidAmount")
                 or auction.get("currentBidAmount")
-                or auction.get("startPrice")
                 or auction.get("nextMinBidAmount")
+                or auction.get("reservePrice")
             )
+
+            # startPrice is the minimum opening bid — use only if nothing else found
+            win_bid = auction_bid or listing_price or auction.get("startPrice")
             if win_bid:
                 lot.current_bid = lot.current_bid or win_bid / 100
 
@@ -499,15 +512,16 @@ class BStockScraper:
         custom = item.get("customAttributes") or {}
         item_sub = attrs.get("item") or {}
 
-        # Build product name: vendor + description
+        # Build product name: vendor + description, then clean for human readability
         vendor = item_sub.get("vendor", "").strip()
         desc = attrs.get("description", "").strip()
         if vendor and vendor.lower() not in desc.lower():
-            name = f"{vendor} {desc}".strip()
+            raw_name = f"{vendor} {desc}".strip()
         else:
-            name = desc or vendor
-        if not name or len(name) < 3:
+            raw_name = desc or vendor
+        if not raw_name or len(raw_name) < 3:
             return None
+        name = clean_ebay_query(raw_name)
 
         # unitRetail and extRetail are in cents
         unit_retail_cents = attrs.get("unitRetail") or 0
