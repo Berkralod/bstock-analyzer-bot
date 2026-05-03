@@ -47,21 +47,27 @@ class Cache:
 
     @classmethod
     async def get_history(cls, limit: int = 10) -> list:
-        client = await cls.get_client()
-        keys = await client.lrange("bstock:history", 0, limit - 1)
-        results = []
-        for raw in keys:
-            try:
-                results.append(json.loads(raw))
-            except Exception:
-                pass
-        return results
+        try:
+            client = await cls.get_client()
+            keys = await client.lrange("bstock:history", 0, limit - 1)
+            results = []
+            for raw in keys:
+                try:
+                    results.append(json.loads(raw))
+                except Exception:
+                    pass
+            return results
+        except Exception:
+            return []
 
     @classmethod
     async def push_history(cls, entry: dict) -> None:
-        client = await cls.get_client()
-        await client.lpush("bstock:history", json.dumps(entry))
-        await client.ltrim("bstock:history", 0, 49)
+        try:
+            client = await cls.get_client()
+            await client.lpush("bstock:history", json.dumps(entry))
+            await client.ltrim("bstock:history", 0, 49)
+        except Exception:
+            pass
 
     @classmethod
     async def close(cls) -> None:
