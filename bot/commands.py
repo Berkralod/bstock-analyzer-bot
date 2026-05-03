@@ -104,8 +104,17 @@ async def _run_analysis(update: Update, url: str) -> None:
     msg = await update.message.reply_text("🔍 Lot scrape ediliyor...")
 
     try:
-        lot = await _scraper.scrape_lot(url)
+        import asyncio as _asyncio
+        t0 = time.time()
 
+        try:
+            lot = await _asyncio.wait_for(_scraper.scrape_lot(url), timeout=60.0)
+        except _asyncio.TimeoutError:
+            _processing.discard(msg_id)
+            await msg.edit_text("⏱ B-Stock scrape zaman aşımı (60s). Tekrar deneyin.")
+            return
+
+        t_scrape = round(time.time() - t0, 1)
         urun_sayisi = lot.product_count or len(lot.products)
 
         if urun_sayisi == 0:
@@ -118,15 +127,15 @@ async def _run_analysis(update: Update, url: str) -> None:
             return
 
         await msg.edit_text(
-            f"📦 {urun_sayisi} ürün bulundu. Pazar fiyatları araştırılıyor... (~60-90 sn)"
+            f"📦 {urun_sayisi} ürün bulundu (scrape: {t_scrape}s). eBay fiyatları araştırılıyor..."
         )
 
-        import asyncio as _asyncio
         try:
-            result = await _asyncio.wait_for(_pipeline.run(lot), timeout=180.0)
+            result = await _asyncio.wait_for(_pipeline.run(lot), timeout=120.0)
         except _asyncio.TimeoutError:
             _processing.discard(msg_id)
-            await msg.edit_text("⏱ Analiz zaman aşımına uğradı (3 dk). Daha az ürünlü bir lot deneyin veya tekrar gönderin.")
+            t_total = round(time.time() - t0, 1)
+            await msg.edit_text(f"⏱ Pipeline timeout ({t_total}s). Scrape: {t_scrape}s. Tekrar gönderin.")
             return
 
         await Cache.push_history({
