@@ -440,29 +440,47 @@ async def cmd_testebay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         except Exception as e:
             lines.append(f"findItemsByKeywords ERR: {e}")
 
-    # Test 1c: Browse API with OAuth (modern replacement)
+    # Test 1c: Browse API with OAuth
     if ebay_app_id:
         import base64 as _b64
         cert_id = "PRD-6c21b7a29737-ebe0-43a4-bd70-f269"
         try:
             creds = _b64.b64encode(f"{ebay_app_id}:{cert_id}".encode()).decode()
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            async with httpx.AsyncClient(timeout=15.0) as client:
                 tok_r = await client.post(
                     "https://api.ebay.com/identity/v1/oauth2/token",
                     headers={"Authorization": f"Basic {creds}", "Content-Type": "application/x-www-form-urlencoded"},
                     data={"grant_type": "client_credentials", "scope": "https://api.ebay.com/oauth/api_scope"},
                 )
-                lines.append(f"OAuth token: HTTP {tok_r.status_code} | {tok_r.text[:200]}")
+                lines.append(f"OAuth token: HTTP {tok_r.status_code}")
                 if tok_r.status_code == 200:
                     token = tok_r.json().get("access_token", "")
+                    # Browse API - active listings
                     browse_r = await client.get(
                         "https://api.ebay.com/buy/browse/v1/item_summary/search",
                         headers={"Authorization": f"Bearer {token}", "X-EBAY-C-MARKETPLACE-ID": "EBAY_US"},
-                        params={"q": query, "limit": "3"},
+                        params={"q": query, "limit": "10", "filter": "buyingOptions:{FIXED_PRICE}"},
                     )
-                    lines.append(f"Browse API: HTTP {browse_r.status_code} | {browse_r.text[:300]}")
+                    if browse_r.status_code == 200:
+                        items = browse_r.json().get("itemSummaries", [])
+                        prices = [float(i["price"]["value"]) for i in items if "price" in i]
+                        lines.append(f"Browse API active: {len(items)} items, prices: {[round(p,2) for p in prices[:5]]}")
+                    else:
+                        lines.append(f"Browse API: HTTP {browse_r.status_code} | {browse_r.text[:200]}")
+                    # Marketplace Insights - sold prices (beta)
+                    ins_r = await client.get(
+                        "https://api.ebay.com/buy/marketplace_insights/v1_beta/item_sales/search",
+                        headers={"Authorization": f"Bearer {token}", "X-EBAY-C-MARKETPLACE-ID": "EBAY_US"},
+                        params={"q": query, "limit": "10"},
+                    )
+                    if ins_r.status_code == 200:
+                        sales = ins_r.json().get("itemSales", [])
+                        sold_prices = [float(s["lastSoldPrice"]["value"]) for s in sales if "lastSoldPrice" in s]
+                        lines.append(f"Insights SOLD: {len(sales)} items, prices: {[round(p,2) for p in sold_prices[:5]]}")
+                    else:
+                        lines.append(f"Insights API: HTTP {ins_r.status_code} | {ins_r.text[:150]}")
         except Exception as e:
-            lines.append(f"Browse API ERR: {e}")
+            lines.append(f"Browse/Insights ERR: {type(e).__name__}: {str(e)[:150]}")
 
     # Test 2: eBay direct (no proxy)
     try:
