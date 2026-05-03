@@ -1,5 +1,4 @@
-import hashlib
-import hmac
+import asyncio
 import json
 import logging
 
@@ -37,7 +36,6 @@ async def health() -> dict:
 
 @app.post("/webhook")
 async def webhook(request: Request) -> Response:
-    # Verify Telegram webhook secret
     secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
     if secret != config.TELEGRAM_WEBHOOK_SECRET:
         raise HTTPException(status_code=403, detail="Invalid secret")
@@ -49,5 +47,6 @@ async def webhook(request: Request) -> Response:
         raise HTTPException(status_code=400, detail="Bad JSON")
 
     update = Update.de_json(data, _tg_app.bot)
-    await _tg_app.process_update(update)
+    # Process in background so HTTP 200 returns immediately to Telegram
+    asyncio.create_task(_tg_app.process_update(update))
     return Response(status_code=200)
