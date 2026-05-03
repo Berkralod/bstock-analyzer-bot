@@ -10,9 +10,23 @@ _BROWSE_API = "https://api.ebay.com/buy/browse/v1/item_summary/search"
 _TOKEN_URL = "https://api.ebay.com/identity/v1/oauth2/token"
 _EBAY_CERT_ID = "PRD-6c21b7a29737-ebe0-43a4-bd70-f269"
 
-_semaphore = asyncio.Semaphore(8)
-_token_lock = asyncio.Lock()
 _token_cache: dict = {"token": None, "expires_at": 0}
+_token_lock: asyncio.Lock | None = None
+_semaphore: asyncio.Semaphore | None = None
+
+
+def _get_semaphore() -> asyncio.Semaphore:
+    global _semaphore
+    if _semaphore is None:
+        _semaphore = asyncio.Semaphore(8)
+    return _semaphore
+
+
+def _get_lock() -> asyncio.Lock:
+    global _token_lock
+    if _token_lock is None:
+        _token_lock = asyncio.Lock()
+    return _token_lock
 
 
 class EbayScraper:
@@ -47,7 +61,7 @@ class EbayScraper:
             return _empty
 
         try:
-            async with _semaphore:
+            async with _get_semaphore():
                 async with httpx.AsyncClient(timeout=10.0) as client:
                     resp = await client.get(
                         _BROWSE_API,
@@ -93,7 +107,7 @@ class EbayScraper:
         if _token_cache["token"] and _token_cache["expires_at"] > now + 60:
             return _token_cache["token"]
 
-        async with _token_lock:
+        async with _get_lock():
             # Re-check inside lock to avoid multiple fetches
             now = time.time()
             if _token_cache["token"] and _token_cache["expires_at"] > now + 60:
