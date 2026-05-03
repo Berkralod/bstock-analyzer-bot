@@ -11,7 +11,12 @@ class Cache:
     @classmethod
     async def get_client(cls) -> aioredis.Redis:
         if cls._client is None:
-            cls._client = aioredis.from_url(config.REDIS_URL, decode_responses=True)
+            cls._client = aioredis.from_url(
+                config.REDIS_URL,
+                decode_responses=True,
+                socket_timeout=3.0,
+                socket_connect_timeout=3.0,
+            )
         return cls._client
 
     @classmethod
@@ -21,18 +26,24 @@ class Cache:
 
     @classmethod
     async def get(cls, namespace: str, query: str) -> Optional[Any]:
-        client = await cls.get_client()
-        key = cls._key(namespace, query)
-        raw = await client.get(key)
-        if raw:
-            return json.loads(raw)
+        try:
+            client = await cls.get_client()
+            key = cls._key(namespace, query)
+            raw = await client.get(key)
+            if raw:
+                return json.loads(raw)
+        except Exception:
+            pass
         return None
 
     @classmethod
     async def set(cls, namespace: str, query: str, value: Any, ttl: int) -> None:
-        client = await cls.get_client()
-        key = cls._key(namespace, query)
-        await client.setex(key, ttl, json.dumps(value))
+        try:
+            client = await cls.get_client()
+            key = cls._key(namespace, query)
+            await client.setex(key, ttl, json.dumps(value))
+        except Exception:
+            pass
 
     @classmethod
     async def get_history(cls, limit: int = 10) -> list:
