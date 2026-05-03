@@ -148,14 +148,21 @@ async def _run_analysis(update: Update, url: str) -> None:
         })
 
         messages = format_report(result)
-        await msg.delete()
+        # Send messages FIRST, then delete progress msg
         for m in messages:
-            await update.message.reply_text(m, parse_mode="MarkdownV2")
+            await update.message.reply_text(m, parse_mode="Markdown")
+        try:
+            await msg.delete()
+        except Exception:
+            pass
 
     except Exception as e:
         import traceback
-        tb = traceback.format_exc()[-400:]
-        await msg.edit_text(f"❌ Hata: {str(e)[:200]}\n\n`{tb}`", parse_mode="Markdown")
+        tb = traceback.format_exc()[-600:]
+        try:
+            await msg.edit_text(f"❌ Hata: {str(e)[:300]}\n\n{tb}", parse_mode=None)
+        except Exception:
+            await update.message.reply_text(f"❌ Hata: {str(e)[:300]}\n\n{tb}")
     finally:
         _processing.discard(msg_id)
 
