@@ -30,14 +30,16 @@ def _get_lock() -> asyncio.Lock:
 
 
 class EbayScraper:
-    async def get_sold_data(self, product_name: str, condition: str = "") -> Dict[str, Any]:
+    async def get_sold_data(
+        self, product_name: str, condition: str = "", msrp: float | None = None
+    ) -> Dict[str, Any]:
         cache_key = f"ebay|{product_name}|{condition}"
         cached = await Cache.get("ebay_sold", cache_key)
         if cached:
             return cached
 
         query = f"{product_name} {condition}".strip()
-        result = await self._fetch_prices(query)
+        result = await self._fetch_prices(query, msrp=msrp)
 
         if result.get("avg"):
             await Cache.set("ebay_sold", cache_key, result, config.CACHE_TTL_EBAY)
@@ -53,7 +55,7 @@ class EbayScraper:
         await Cache.set("ebay_active", cache_key, count, config.CACHE_TTL_EBAY)
         return count
 
-    async def _fetch_prices(self, query: str) -> Dict[str, Any]:
+    async def _fetch_prices(self, query: str, msrp: float | None = None) -> Dict[str, Any]:
         """Fetch prices via Browse API. Apply 0.85 factor to estimate sold prices."""
         _empty: Dict[str, Any] = {"avg": None, "median": None, "min": None, "max": None, "count": 0}
         token = await self._get_token()
@@ -83,6 +85,13 @@ class EbayScraper:
                         prices.append(price)
                 except (KeyError, ValueError, TypeError):
                     continue
+
+            # Filter out outliers using MSRP ceiling (5x) and IQR
+            if msrp and msrp > 0:
+                ceiling = msrp * 5
+                prices = [p for p in prices if p <= ceiling]
+
+            prices = self._iqr_filter(prices)
 
             stats = self._compute_stats(prices)
             # Active listing prices are ~15% higher than actual sold — apply discount
@@ -134,6 +143,19 @@ class EbayScraper:
             except Exception:
                 pass
         return None
+
+    def _iqr_filter(self, prices: list) -> list:
+        """Remove outliers outside 1.5×IQR. Needs at least 4 data points."""
+        if len(prices) < 4:
+            return prices
+        s = sorted(prices)
+        n = len(s)
+        q1 = s[n // 4]
+        q3 = s[(3 * n) // 4]
+        iqr = q3 - q1
+        lo, hi = q1 - 1.5 * iqr, q3 + 1.5 * iqr
+        filtered = [p for p in s if lo <= p <= hi]
+        return filtered if filtered else prices
 
     def _compute_stats(self, prices: list) -> Dict[str, Any]:
         if not prices:

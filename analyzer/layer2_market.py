@@ -17,8 +17,7 @@ class Layer2Market:
         name = clean_ebay_query(product.normalized_name or product.name)
         condition_str = product.condition.value
 
-        # eBay Finding API — real sold prices, no scraping
-        ebay_data = await self._ebay.get_sold_data(name, condition_str)
+        ebay_data = await self._ebay.get_sold_data(name, condition_str, msrp=product.listed_msrp)
         ebay_avg = ebay_data.get("avg")
 
         return ProductAnalysis(
