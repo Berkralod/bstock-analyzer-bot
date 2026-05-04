@@ -110,6 +110,19 @@ class BStockScraper:
                 if flat:
                     result["shipping_cost"] = flat / 100
 
+                # pricingStrategy may contain buyer's premium / B-Stock fee rate
+                pricing = ld.get("pricingStrategy") or {}
+                if isinstance(pricing, dict):
+                    for key in ("buyersPremiumRate", "buyerPremiumRate", "buyerFeeRate",
+                                "premiumRate", "feeRate", "rate", "buyersFee"):
+                        val = pricing.get(key)
+                        if val is not None:
+                            try:
+                                result["buyers_premium_rate"] = float(val)
+                            except (TypeError, ValueError):
+                                pass
+                            break
+
                 # listing.lotId is different from the URL UUID — it's the key for the items endpoint
                 internal_lot_id = ld.get("lotId")
                 if internal_lot_id:
@@ -349,6 +362,10 @@ class BStockScraper:
                 if val and not lot.shipping_cost:
                     lot.shipping_cost = float(val)
                     break
+
+            # Buyer's premium rate from pricingStrategy (extracted in _try_json_api)
+            if data.get("buyers_premium_rate") is not None:
+                lot.buyers_premium_rate = data["buyers_premium_rate"]
 
             # Lot ID from listing prettyId / formattedPrettyId
             lot.lot_id = lot.lot_id or listing.get("prettyId") or listing.get("formattedPrettyId")
