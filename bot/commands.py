@@ -289,9 +289,36 @@ async def cmd_debug(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                         except Exception as e:
                             lines.append(f"Offering ERR: {e}")
 
-                        # Show full shipping and saleMetrics
+                        # Show ALL listing keys + fee-related fields
+                        lines.append(f"listing keys: {list(listing_data.keys())}")
                         lines.append(f"shipping: {listing_data.get('shipping')}")
                         lines.append(f"saleMetrics: {listing_data.get('saleMetrics')}")
+                        for fk in ("fees", "buyerFees", "bstockFee", "platformFee",
+                                   "buyersPremium", "buyersPremiumRate", "buyerPremium",
+                                   "charges", "otherCharges"):
+                            val = listing_data.get(fk)
+                            if val is not None:
+                                lines.append(f"  FEE FIELD [{fk}]: {val}")
+
+                        # Probe storefront for fee structure
+                        if storefront_id:
+                            try:
+                                rsf = await client.get(
+                                    f"https://listing.bstock.com/v1/storefronts/{storefront_id}",
+                                    headers=listing_headers, timeout=8.0
+                                )
+                                lines.append(f"Storefront: HTTP {rsf.status_code}")
+                                if rsf.status_code == 200:
+                                    sf = rsf.json()
+                                    lines.append(f"  storefront keys: {list(sf.keys())}")
+                                    for fk in ("fees", "buyerFees", "bstockFee", "buyersPremiumRate",
+                                               "platformFee", "buyerPremium", "charges"):
+                                        val = sf.get(fk)
+                                        if val is not None:
+                                            lines.append(f"  SF FEE [{fk}]: {val}")
+                                    lines.append(f"  storefront: {str(sf)[:600]}")
+                            except Exception as e:
+                                lines.append(f"Storefront ERR: {e}")
 
                         # Docserv: list ALL documents for this listing
                         try:
