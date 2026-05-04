@@ -328,31 +328,44 @@ class BStockScraper:
             # Lot ID from listing prettyId / formattedPrettyId
             lot.lot_id = lot.lot_id or listing.get("prettyId") or listing.get("formattedPrettyId")
 
-            # Fixed-price listing: price lives in the listing record, not the auction
-            listing_price = (
-                listing.get("fixedPrice")
-                or listing.get("price")
-                or listing.get("askingPrice")
-                or listing.get("buyNowPrice")
-                or listing.get("basePrice")
-                or listing.get("salePrice")
-            )
-
-            # Auction lot: current / winning bid (all monetary fields are in cents)
+            # B-Stock API inconsistency: auction bid amounts are in DOLLARS,
+            # but lot item prices (unitRetail/extRetail) and shipping (flatRateCost)
+            # are in CENTS. Do NOT divide auction amounts by 100.
             auction_bid = (
                 auction.get("winningBidAmount")
                 or auction.get("currentBidAmount")
                 or auction.get("nextMinBidAmount")
                 or auction.get("reservePrice")
             )
+            # startPrice is the opening/minimum bid (dollars) — last resort
+            win_bid = auction_bid or auction.get("startPrice")
 
-            # startPrice is the minimum opening bid — use only if nothing else found
-            win_bid = auction_bid or listing_price or auction.get("startPrice")
+            # Fixed-price listing: price in listing record (in CENTS → divide by 100)
+            if not win_bid:
+                listing_price_cents = (
+                    listing.get("fixedPrice")
+                    or listing.get("price")
+                    or listing.get("askingPrice")
+                    or listing.get("buyNowPrice")
+                    or listing.get("basePrice")
+                    or listing.get("salePrice")
+                )
+                if listing_price_cents:
+                    win_bid = listing_price_cents / 100
+
             if win_bid:
-                lot.current_bid = lot.current_bid or win_bid / 100
+                lot.current_bid = lot.current_bid or float(win_bid)
 
-            # Buyer's premium from auction
-            premium = auction.get("buyersPremiumRate") or auction.get("buyerPremiumRate")
+            # Buyer's premium — check auction top-level and nested attributes
+            auction_attrs = auction.get("attributes") or {}
+            premium = (
+                auction.get("buyersPremiumRate")
+                or auction.get("buyerPremiumRate")
+                or auction_attrs.get("buyersPremiumRate")
+                or auction_attrs.get("buyerPremiumRate")
+                or listing.get("buyersPremiumRate")
+                or listing.get("buyerPremiumRate")
+            )
             if premium:
                 try:
                     rate = float(premium)
