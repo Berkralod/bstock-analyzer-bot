@@ -9,7 +9,7 @@ class Lot(BaseModel):
     title: Optional[str] = None
     current_bid: Optional[float] = None
     shipping_cost: Optional[float] = None
-    buyers_premium_rate: float = 0.15
+    buyers_premium_rate: float = 0.0
     buyers_premium_amount: Optional[float] = None
     total_cost: Optional[float] = None
     product_count: int = 0

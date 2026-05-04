@@ -134,6 +134,21 @@ class BStockScraper:
                 if auctions:
                     auction_data = auctions[0]
                     result["_auction"] = auction_data
+
+                    # Fetch full auction detail for complete attributes
+                    # (attributes in list response are truncated)
+                    auction_id = auction_data.get("_id")
+                    if auction_id:
+                        try:
+                            ra = await client.get(
+                                f"{AUCTION_BASE}/v1/auctions/{auction_id}",
+                                headers=headers, timeout=10.0,
+                            )
+                            if ra.status_code == 200:
+                                result["_auction"] = ra.json()
+                                auction_data = result["_auction"]
+                        except Exception:
+                            pass
         except Exception:
             pass
 
@@ -316,7 +331,8 @@ class BStockScraper:
             auction = data.get("_auction") or {}
             ingestion = data.get("_ingestion") or {}
 
-            # Shipping from listing (already converted to dollars in _try_json_api)
+            # Shipping: check multiple sources in priority order
+            # 1. Pre-computed value from _try_json_api (listing flatRateCost / 100)
             if data.get("shipping_cost"):
                 lot.shipping_cost = lot.shipping_cost or data["shipping_cost"]
             else:
@@ -324,6 +340,15 @@ class BStockScraper:
                 flat = shipping.get("flatRateCost")
                 if flat:
                     lot.shipping_cost = lot.shipping_cost or flat / 100
+
+            # 2. Also check auction attributes for shippingCost / shippingAmount
+            # (full auction detail endpoint may have more complete data)
+            auction_attrs = (data.get("_auction") or {}).get("attributes") or {}
+            for key in ("shippingCost", "shippingAmount", "totalShipping", "flatRateShipping"):
+                val = auction_attrs.get(key)
+                if val and not lot.shipping_cost:
+                    lot.shipping_cost = float(val)
+                    break
 
             # Lot ID from listing prettyId / formattedPrettyId
             lot.lot_id = lot.lot_id or listing.get("prettyId") or listing.get("formattedPrettyId")

@@ -49,14 +49,17 @@ def format_report(result: AnalysisResult) -> List[str]:
 
 def _header(r: AnalysisResult) -> str:
     premium = r.buyers_premium or 0
-    premium_rate = (premium / r.current_bid * 100) if r.current_bid else 0
+    premium_line = ""
+    if premium > 0:
+        premium_rate = (premium / r.current_bid * 100) if r.current_bid else 0
+        premium_line = f"💳 Buyer's Premium: ${_n(premium)} (%{premium_rate:.0f})\n"
     return (
         "📊 *B-STOCK LOT ANALİZ RAPORU*\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"📦 Toplam Ürün: {r.product_count}\n"
         f"💰 Mevcut Bid: ${_n(r.current_bid)}\n"
-        f"🚚 Kargo: ${_n(r.shipping_cost)}\n"
-        f"💳 Buyer's Premium: ${_n(premium)} (%{premium_rate:.0f})\n"
+        f"🚚 Kargo: ${_n(r.shipping_cost)} _(B-Stock'ta toplam ücreti kontrol et)_\n"
+        f"{premium_line}"
         f"📋 Toplam Maliyet: ${_n(r.total_cost)}\n"
     )
 
