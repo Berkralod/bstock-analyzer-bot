@@ -41,11 +41,6 @@ class ProductAnalysis(BaseModel):
     ebay_sold_median: Optional[float] = None
     ebay_sold_min: Optional[float] = None
     ebay_sold_max: Optional[float] = None
-    amazon_new: Optional[float] = None
-    amazon_used: Optional[float] = None
-    google_shopping_price: Optional[float] = None
-    walmart_price: Optional[float] = None
-    fb_estimated_price: Optional[float] = None
     sell_through_rate: Optional[float] = None
     competition_count: Optional[int] = None
     price_trend: Optional[str] = None

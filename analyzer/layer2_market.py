@@ -21,11 +21,6 @@ class Layer2Market:
         ebay_data = await self._ebay.get_sold_data(name, condition_str)
         ebay_avg = ebay_data.get("avg")
 
-        # Amazon/FB estimated from eBay (real market anchor, not MSRP)
-        amazon_new = round(ebay_avg * 1.15, 2) if ebay_avg else None
-        amazon_used = round(ebay_avg * 0.80, 2) if ebay_avg else None
-        fb_price = round(ebay_avg * 1.18, 2) if ebay_avg else None
-
         return ProductAnalysis(
             name=name,
             condition=condition_str,
@@ -37,9 +32,4 @@ class Layer2Market:
             ebay_sold_median=ebay_data.get("median"),
             ebay_sold_min=ebay_data.get("min"),
             ebay_sold_max=ebay_data.get("max"),
-            amazon_new=amazon_new,
-            amazon_used=amazon_used,
-            google_shopping_price=None,
-            walmart_price=None,
-            fb_estimated_price=fb_price,
         )

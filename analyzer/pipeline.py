@@ -12,7 +12,7 @@ from analyzer.layer1_screen import Layer1Screener
 from analyzer.layer2_market import Layer2Market
 from analyzer.layer3_deep import Layer3Deep
 from analyzer.condition import get_multiplier
-from analyzer.cost_calculator import calc_ebay, calc_shopify, calc_amazon, calc_facebook
+from analyzer.cost_calculator import calc_ebay
 from analyzer.decision_engine import make_decision, compute_max_bid, choose_best_platform
 
 
@@ -152,9 +152,6 @@ class AnalysisPipeline:
 
         for platform, price, fn, kwargs in [
             ("eBay", pa.ebay_sold_avg, calc_ebay, {}),
-            ("Shopify", pa.amazon_new, calc_shopify, {}),
-            ("Amazon", pa.amazon_used, calc_amazon, {}),
-            ("Facebook/Flea", pa.fb_estimated_price, calc_facebook, {}),
         ]:
             r = build(platform, price, fn, **kwargs)
             if r:

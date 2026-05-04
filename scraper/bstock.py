@@ -382,9 +382,12 @@ class BStockScraper:
                         r"\$\s*([\d,]+(?:\.\d+)?)\s*(?:msrp|retail|total)",
                         title_raw, re.IGNORECASE
                     )
-                # Extract condition
+                # Extract condition — capture multi-word variants like "Used - Good"
                 cond_m = re.search(
-                    r"\b(like[\s-]new|open[\s-]?box|refurb\w*|used|salvage|untested|customer return|new)\b",
+                    r"\b(like[\s\-]+new|open[\s\-]?box|refurb\w*"
+                    r"|used[\s\-–]*very[\s\-]*good|used[\s\-–]*good"
+                    r"|used[\s\-–]*accept\w*|used"
+                    r"|salvage|untested|customer return|new)\b",
                     title_raw, re.IGNORECASE
                 )
 
@@ -515,10 +518,13 @@ class BStockScraper:
         # Build product name: vendor + description, then clean for human readability
         vendor = item_sub.get("vendor", "").strip()
         desc = attrs.get("description", "").strip()
-        if vendor and vendor.lower() not in desc.lower():
-            raw_name = f"{vendor} {desc}".strip()
+        # Get the short brand name (e.g. "APPLE COMPUTER INC" → "Apple")
+        vendor_short = clean_ebay_query(vendor) if vendor else ""
+        # Only prepend brand if desc doesn't already start with it
+        if vendor_short and not desc.upper().startswith(vendor_short.upper()):
+            raw_name = f"{vendor_short} {desc}".strip()
         else:
-            raw_name = desc or vendor
+            raw_name = desc or vendor_short
         if not raw_name or len(raw_name) < 3:
             return None
         name = clean_ebay_query(raw_name)
