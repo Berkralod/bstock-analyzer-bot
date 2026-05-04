@@ -58,7 +58,7 @@ def _header(r: AnalysisResult) -> str:
         "━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"📦 Toplam Ürün: {r.product_count}\n"
         f"💰 Mevcut Bid: ${_n(r.current_bid)}\n"
-        f"🚚 Kargo: ${_n(r.shipping_cost)} _(B-Stock'ta toplam ücreti kontrol et)_\n"
+        f"🚚 Kargo: ${_n(r.shipping_cost)}\n"
         f"{premium_line}"
         f"📋 Toplam Maliyet: ${_n(r.total_cost)}\n"
     )

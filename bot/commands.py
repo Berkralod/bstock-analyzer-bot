@@ -327,7 +327,10 @@ async def cmd_debug(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                                     lines.append(f"  auction _id: {auction_id}")
                                     lines.append(f"  winningBidAmount: {a0.get('winningBidAmount')} | startPrice: {a0.get('startPrice')} | nextMinBidAmount: {a0.get('nextMinBidAmount')}")
                                     lines.append(f"  keys: {list(a0.keys())}")
-                                    lines.append(f"  full: {str(a0)[:400]}")
+                                    # Show full attributes (untruncated) to find B-Stock Fee field
+                                    attrs = a0.get("attributes") or {}
+                                    lines.append(f"  attributes keys: {list(attrs.keys())}")
+                                    lines.append(f"  attributes: {str(attrs)[:1500]}")
                         except Exception as e:
                             lines.append(f"Auction ERR: {e}")
 
